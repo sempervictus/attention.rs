@@ -194,6 +194,51 @@ static inline __device__ float softmax_fp8_to_float_e4m3(uint8_t x) {
     __half_raw hr = __nv_cvt_fp8_to_halfraw(a, fp8_type);
     return half_to_float(hr.x);
   }
+#elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890)
+  #include "cuda_fp16.h"
+  typedef enum {
+    __NV_E4M3 = 0,
+    __NV_E5M2 = 1
+  } __nv_fp8_interpretation_t;
+
+  /// Use ASM intrinsics for E4M3 (SM89)
+  static inline __device__ uint8_t float_to_fp8_e4m3(float f) {
+    float b = 0;
+    uint16_t out;
+    asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %2, %1;" : "=h"(out) : "f"(f), "f"(b));
+    return (uint8_t)(out & 0xff);
+  }
+
+  static inline __device__ float fp8_to_float_e4m3(uint8_t a) {
+    uint16_t i = (uint16_t)(a);
+    union {
+      half2 out1;
+      uint32_t out2;
+    } u;
+    asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;" : "=r"(u.out2) : "h"(i));
+    return half_to_float(u.out1.x);
+  }
+
+  static inline __device__ uint16_t half2_to_fp16_e4m3(uint32_t a) {
+    uint16_t out;
+    asm volatile("cvt.rn.satfinite.e4m3x2.f16x2 %0, %1;" : "=h"(out) : "r"(a));
+    return out;
+  }
+
+  static inline __device__ uint32_t fp16_to_half2_e4m3(uint16_t a) {
+    uint32_t out;
+    asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;" : "=r"(out) : "h"(a));
+    return out;
+  }
+
+  // Dispatch wrapper for intrinsics (E4M3) on SM89
+  static inline __device__ uint8_t dispatch_float_to_fp8(float f, const __nv_fp8_interpretation_t /*fp8_type*/) {
+    return float_to_fp8_e4m3(f);
+  }
+
+  static inline __device__ float dispatch_fp8_to_float(uint8_t a, const __nv_fp8_interpretation_t /*fp8_type*/) {
+    return fp8_to_float_e4m3(a);
+  }
 #else
   typedef enum {
     __NV_E4M3 = 0,
