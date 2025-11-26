@@ -484,43 +484,41 @@ pub fn clear_blocks(cache: &Tensor, block_ids: &Vec<u32>) -> Result<()> {
         cache: &Tensor,
         block_ids: &Vec<u32>,
     ) -> Result<()> {
-        use metal::{self, MTLStorageMode};
-        // let block_size_elements = cache.elem_count() / cache.dim(0)?;
-        // let (cache_storage, _) = cache.storage_and_layout();
-        // let dtype_size = cache.dtype().size_in_bytes();
-        // let dst_dev = cache.device().as_metal_device();
+        let block_size_elements = cache.elem_count() / cache.dim(0)?;
+        let (cache_storage, _) = cache.storage_and_layout();
+        let dtype_size = cache.dtype().size_in_bytes();
 
-        // let Storage::Metal(cache_storage) = &*cache_storage else {
-        //     candle_core::bail!("Invalid kvcache storage!")
-        // };
+        let Storage::Metal(cache_storage) = &*cache_storage else {
+            candle_core::bail!("Invalid kvcache storage!")
+        };
 
-        // let cache_buffer = cache_storage.buffer(); // Get the underlying metal::Buffer
-        // let num_blocks = cache.dim(0)?;
+        let cache_buffer = cache_storage.buffer(); // Get the underlying metal::Buffer
+        let num_blocks = cache.dim(0)?;
 
-        // let cache_ptr = cache_buffer.contents() as *mut T;
-        // if cache_ptr.is_null() {
-        //     candle_core::bail!(
-        //         "Failed to get Metal buffer contents. Buffer might be device-private (not Shared or Managed)."
-        //     );
-        // }
-        // let is_managed = cache_ptr.storage_mode() == MTLStorageMode::Managed;
+        let cache_ptr = cache_buffer.contents() as *mut T;
+        if cache_ptr.is_null() {
+            candle_core::bail!(
+                "Failed to get Metal buffer contents. Buffer might be device-private (not Shared or Managed)."
+            );
+        }
 
-        // for block_number in block_ids {
-        //     let src_offset: usize = block_number * block_size_elements;
-        //     assert!(
-        //         *block_number < num_blocks,
-        //         "Invalid gpu block {} / {}",
-        //         block_number,
-        //         num_blocks
-        //     );
+        for block_number in block_ids {
+            let src_offset: usize = (*block_number as usize) * block_size_elements;
+            assert!(
+                (*block_number as usize) < num_blocks,
+                "Invalid gpu block {} / {}",
+                block_number,
+                num_blocks
+            );
 
-        //     let dst_ptr = unsafe { cache_ptr.add(src_offset) };
+            let dst_ptr = unsafe { cache_ptr.add(src_offset) };
 
-        //     // Perform a simple CPU-side memory copy.
-        //     // On UMA, this directly writes to the memory the GPU will use.
-        //     unsafe { std::ptr::write_bytes(dst_ptr, 0, block_number * block_size_elements); }
-
-        // }
+            // Perform a simple CPU-side memory copy.
+            // On UMA, this directly writes to the memory the GPU will use.
+            unsafe {
+                std::ptr::write_bytes(dst_ptr, 0, block_size_elements * dtype_size);
+            }
+        }
         Ok(())
     }
 
