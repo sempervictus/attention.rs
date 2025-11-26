@@ -420,3 +420,124 @@ pub fn swap_blocks(
         }
     }
 }
+
+pub fn clear_blocks(cache: &Tensor, block_ids: &Vec<u32>) -> Result<()> {
+    use candle_core::DType;
+    use half::{bf16, f16};
+    #[cfg(feature = "cuda")]
+    fn call_fwd<
+        T: candle_core::cuda_backend::CudaDType
+            + candle_core::cuda_backend::cudarc::driver::DeviceRepr
+            + candle_core::WithDType,
+    >(
+        cache: &Tensor,
+        block_ids: &Vec<u32>,
+    ) -> Result<()> {
+        use candle_core::cuda_backend::cudarc::driver::{
+            result, CudaSlice, DevicePtr, DevicePtrMut,
+        };
+        let block_size_elements = cache.elem_count() / cache.dim(0)?;
+        let (cache_storage, _) = cache.storage_and_layout();
+        let dtype_size = cache.dtype().size_in_bytes();
+        let dst_dev = cache.device().as_cuda_device()?;
+
+        let Storage::Cuda(cache_storage) = &*cache_storage else {
+            candle_core::bail!("Invalid kvcache storage!")
+        };
+
+        let num_blocks = cache.dim(0)?;
+
+        let cache_ptr = *cache_storage.as_cuda_slice::<T>()?.device_ptr();
+
+        for block_number in block_ids {
+            let src_offset: usize = *block_number as usize * block_size_elements;
+            assert!(
+                *block_number < num_blocks as u32,
+                "Invalid gpu block {} / {}",
+                block_number,
+                num_blocks
+            );
+
+            let mut src_slice: std::mem::ManuallyDrop<CudaSlice<T>> = unsafe {
+                let slice = dst_dev.upgrade_device_ptr(
+                    cache_ptr.wrapping_add(src_offset as u64),
+                    block_size_elements * dtype_size,
+                );
+                std::mem::ManuallyDrop::new(slice)
+            };
+
+            unsafe {
+                result::memset_d8_sync(
+                    *src_slice.device_ptr_mut(),
+                    0,
+                    block_size_elements * dtype_size,
+                )
+                .map_err(candle_core::Error::wrap)?
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "metal")]
+    fn call_fwd<T: candle_core::WithDType + Copy>(
+        cache: &Tensor,
+        block_ids: &Vec<u32>,
+    ) -> Result<()> {
+        use metal::{self, MTLStorageMode};
+        // let block_size_elements = cache.elem_count() / cache.dim(0)?;
+        // let (cache_storage, _) = cache.storage_and_layout();
+        // let dtype_size = cache.dtype().size_in_bytes();
+        // let dst_dev = cache.device().as_metal_device();
+
+        // let Storage::Metal(cache_storage) = &*cache_storage else {
+        //     candle_core::bail!("Invalid kvcache storage!")
+        // };
+
+        // let cache_buffer = cache_storage.buffer(); // Get the underlying metal::Buffer
+        // let num_blocks = cache.dim(0)?;
+
+        // let cache_ptr = cache_buffer.contents() as *mut T;
+        // if cache_ptr.is_null() {
+        //     candle_core::bail!(
+        //         "Failed to get Metal buffer contents. Buffer might be device-private (not Shared or Managed)."
+        //     );
+        // }
+        // let is_managed = cache_ptr.storage_mode() == MTLStorageMode::Managed;
+
+        // for block_number in block_ids {
+        //     let src_offset: usize = block_number * block_size_elements;
+        //     assert!(
+        //         *block_number < num_blocks,
+        //         "Invalid gpu block {} / {}",
+        //         block_number,
+        //         num_blocks
+        //     );
+
+        //     let dst_ptr = unsafe { cache_ptr.add(src_offset) };
+
+        //     // Perform a simple CPU-side memory copy.
+        //     // On UMA, this directly writes to the memory the GPU will use.
+        //     unsafe { std::ptr::write_bytes(dst_ptr, 0, block_number * block_size_elements); }
+
+        // }
+        Ok(())
+    }
+
+    #[cfg(not(any(feature = "metal", feature = "cuda")))]
+    fn call_fwd<T: candle_core::WithDType + Copy>(
+        _: &Tensor,
+        _: &Vec<u32>,
+    ) -> candle_core::Result<()> {
+        candle_core::bail!("clear_blocks is not implemented on this platform.")
+    }
+
+    match cache.dtype() {
+        DType::F16 => call_fwd::<f16>(cache, block_ids),
+        DType::BF16 => call_fwd::<bf16>(cache, block_ids),
+        DType::U8 => call_fwd::<u8>(cache, block_ids),
+        _ => {
+            candle_core::bail!("clear_blocks only accept f16/bf16/u8 kvcache dtypes!")
+        }
+    }
+}
