@@ -13,6 +13,7 @@ pub use kernels;
 #[cfg(feature = "metal")]
 pub use metal_kernels;
 pub mod cache;
+pub mod ops;
 
 const KV_SCALE_UPDATE_ITERATION: i32 = 128;
 use std::sync::atomic::{AtomicI32, Ordering};
