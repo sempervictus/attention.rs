@@ -110,7 +110,8 @@ __device__ void paged_attention_kernel(
     const int max_num_blocks_per_seq,
     const float* __restrict__ alibi_slopes,  // [num_heads]
     const int q_stride, const int kv_block_stride, const int kv_head_stride,
-    const float softscapping) {
+    const float softscapping, 
+    const int sliding_window) {
   const int seq_idx = blockIdx.y;
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
@@ -127,11 +128,29 @@ __device__ void paged_attention_kernel(
   const int num_blocks_per_partition =
       USE_PARTITIONING ? PARTITION_SIZE / BLOCK_SIZE : num_seq_blocks;
 
+  // Sliding Window Logic: Calculate global start boundaries
+  // If sliding_window is valid, we only attend to tokens in [seq_len - sliding_window, seq_len)
+  const int global_start_token_idx = (sliding_window > 0 && sliding_window < seq_len) 
+                                     ? (seq_len - sliding_window) : 0;
+  const int global_start_block_idx = global_start_token_idx / BLOCK_SIZE;
+
   // [start_block_idx, end_block_idx) is the range of blocks to process.
-  const int start_block_idx =
+  int start_block_idx =
       USE_PARTITIONING ? partition_idx * num_blocks_per_partition : 0;
+  
+  // Adjust start_block_idx based on sliding window
+  // We advance the start block to skip blocks strictly outside the window
+  start_block_idx = MAX(start_block_idx, global_start_block_idx);
+
   const int end_block_idx =
       MIN(start_block_idx + num_blocks_per_partition, num_seq_blocks);
+  
+  // If the sliding window pushes start beyond end (e.g. this partition is entirely 
+  // outside the window), terminate early.
+  if (start_block_idx >= end_block_idx && USE_PARTITIONING) {
+      return;
+  }
+
   const int num_blocks = end_block_idx - start_block_idx;
 
   // [start_token_idx, end_token_idx) is the range of tokens to process.
@@ -260,7 +279,12 @@ __device__ void paged_attention_kernel(
       if (thread_group_offset == 0) {
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
-        const bool mask = token_idx >= seq_len;
+        
+        // Sliding Window Masking
+        // Mask if token is causal future (token_idx >= seq_len) OR 
+        // token is outside sliding window history (token_idx < global_start_token_idx)
+        const bool mask = token_idx >= seq_len || token_idx < global_start_token_idx;
+        
         logits[token_idx - start_token_idx] = mask ? 0.f : qk;
         // Update the max value.
         qk_max = mask ? qk_max : fmaxf(qk_max, qk);
@@ -468,7 +492,8 @@ __global__ void paged_attention_v1_kernel(
   const int q_stride,
   const int kv_block_stride,
   const int kv_head_stride,
-  const float softscapping) {
+  const float softscapping,
+  const int sliding_window) {
   if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
     #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
       return;
@@ -478,7 +503,7 @@ __global__ void paged_attention_v1_kernel(
   paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
     out, q, k_cache, v_cache, k_scales, v_scales, num_kv_heads, scale, block_tables, context_lens,
-    max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_head_stride, softscapping);
+    max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_head_stride, softscapping, sliding_window);
 }
 
 // Grid: (num_heads, num_seqs, max_num_partitions).
@@ -507,7 +532,8 @@ __global__ void paged_attention_v2_kernel(
   const int q_stride,
   const int kv_block_stride,
   const int kv_head_stride,
-  const float softscapping) {
+  const float softscapping,
+  const int sliding_window) {
   if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
     #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
       return;
@@ -516,7 +542,7 @@ __global__ void paged_attention_v2_kernel(
   paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, PARTITION_SIZE>(
     exp_sums, max_logits, tmp_out, q, k_cache, v_cache, k_scales, v_scales, num_kv_heads, scale,
     block_tables, context_lens, max_num_blocks_per_seq, alibi_slopes,
-    q_stride, kv_block_stride, kv_head_stride, softscapping);
+    q_stride, kv_block_stride, kv_head_stride, softscapping, sliding_window);
 }
 
 // Grid: (num_heads, num_seqs).

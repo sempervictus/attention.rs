@@ -224,8 +224,18 @@ __global__ void chunked_prefill_paged_attention_kernel(
     float alibi = (use_alibi && head_active && lane_active) ? alibi_slopes[query_head_idx] : 0.f;
     float L = 1.f;
 
+    // Sliding Window Calculation
+    // We only attend to tokens in range [start_token_idx, seq_len_full)
+    int start_token_idx = 0;
+    int start_block_idx = 0;
+    if (sliding_window > 0 && sliding_window < (int)seq_len_full) {
+        start_token_idx = (int)seq_len_full - sliding_window;
+        start_block_idx = start_token_idx / BLOCK_SIZE;
+    }
+
     // --- Iterate over all KV blocks ---
-    for (int blk = 0; blk < num_blocks; ++blk) {
+    // Start from start_block_idx instead of 0
+    for (int blk = start_block_idx; blk < num_blocks; ++blk) {
         const uint32_t physical_block = block_table_for_seq[blk];
         const bool valid_block =
             (physical_block != UINT32_MAX) &&
@@ -237,10 +247,16 @@ __global__ void chunked_prefill_paged_attention_kernel(
         bool in_contexts[BLOCK_SIZE] = { false };
         for (int b = 0; b < BLOCK_SIZE; ++b) {
             const int token_idx_in_full = block_in_full + b;
-            bool in_context = token_idx_in_full < (int)seq_len_full;
-            in_contexts[b] = in_context;
+            
+            // Masking logic: Must be in valid context AND within sliding window
+            bool in_context = (token_idx_in_full < (int)seq_len_full);
+            bool in_window = (token_idx_in_full >= start_token_idx);
 
-            if (!in_context || !valid_block || !lane_active) {
+            // Store status for P·V later
+            in_contexts[b] = in_context && in_window;
+
+            // If invalid, mask out QK
+            if (!in_context || !in_window || !valid_block || !lane_active) {
               qk_block[b] = -INFINITY;
               continue;
             }
@@ -296,7 +312,7 @@ __global__ void chunked_prefill_paged_attention_kernel(
 
         #pragma unroll
         for (int b = 0; b < BLOCK_SIZE; ++b) {
-          if (in_contexts[b]) {
+          if (in_contexts[b]) { // Uses the updated context check (window + valid)
               const float P = __expf(qk_block[b] - M);
               reinterpret_cast<float*>(&p_vec[b/VEC_SIZE])[b % VEC_SIZE] = P;
               acc_lane += P;

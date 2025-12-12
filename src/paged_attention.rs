@@ -283,6 +283,7 @@ impl PagedAttention {
                     kv_head_stride as c_int,
                     internal_type,
                     self.softcapping,
+                    self.sliding_window,
                     *dev.cu_stream() as i64,
                 )
             }
@@ -323,6 +324,7 @@ impl PagedAttention {
                     kv_head_stride as c_int,
                     internal_type,
                     self.softcapping,
+                    self.sliding_window,
                     *dev.cu_stream() as i64,
                 )
             }

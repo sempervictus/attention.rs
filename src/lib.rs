@@ -380,11 +380,6 @@ impl PagedAttention {
             .reshape(((), attention_heads, head_size))?;
 
         //decoding with paged-attn
-        let max_context_len = if self.sliding_window.is_some() {
-            self.sliding_window.unwrap()
-        } else {
-            input_metadata.max_context_len
-        };
 
         //if flash-decoding (flash-attn with prefill kvcache) feature not enabled, use our custom paged attention for chunked prefill
         let cu_seqlens_q = if input_metadata.is_prefill && input_metadata.block_tables.is_some() {
@@ -407,7 +402,7 @@ impl PagedAttention {
             block_tables,
             context_lens,
             None,
-            max_context_len,
+            input_metadata.max_context_len,
             self.scale,
             softcapping.unwrap_or(1.0f64) as f32,
             cu_seqlens_q,

@@ -67,6 +67,7 @@ extern "C" {
 
         dtype: u32,
         softscapping: f32,
+        sliding_window: c_int,
         stream: i64,
     );
 
@@ -97,6 +98,7 @@ extern "C" {
 
         dtype: u32,
         softscapping: f32,
+        sliding_window: c_int,
         stream: i64,
     );
 
