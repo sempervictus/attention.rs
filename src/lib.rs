@@ -27,6 +27,7 @@ pub struct InputMetadata {
     pub max_seqlen_q: usize,
     pub max_seqlen_k: usize,
     pub max_context_len: usize,
+    pub disable_flash_attn: Option<bool>,
 }
 
 #[allow(dead_code)]
@@ -304,17 +305,22 @@ impl PagedAttention {
         }
 
         #[cfg(feature = "flash-decoding")]
-        return self.flash_forward(
-            query,
-            key,
-            value,
-            key_cache,
-            value_cache,
-            input_metadata,
-            softcapping,
-        );
+        if !input_metadata.disable_flash_attn.unwrap_or(false) {
+            return self.flash_forward(
+                query,
+                key,
+                value,
+                key_cache,
+                value_cache,
+                input_metadata,
+                softcapping,
+            );
+        }
 
-        if input_metadata.is_prefill && input_metadata.block_tables.is_none() {
+        if !input_metadata.disable_flash_attn.unwrap_or(false)
+            && input_metadata.is_prefill
+            && input_metadata.block_tables.is_none()
+        {
             // non context-cache prefill with flash-attn
             #[cfg(feature = "flash-attn")]
             return self.flash_forward(
