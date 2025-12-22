@@ -141,6 +141,7 @@ let input_metadata = InputMetadata {
     max_seqlen_q: 1024,
     max_seqlen_k: 1024,
     max_context_len: 1024,
+    seqlens: Some(seqlens),
 };
 
 // Step 2: Run attention
@@ -175,6 +176,7 @@ let input_metadata = InputMetadata {
     max_seqlen_q: 4096,
     max_seqlen_k: 4096,
     max_context_len: 12288,
+    seqlens: Some(seqlens),
 };
 ```
 

@@ -28,6 +28,7 @@ pub struct InputMetadata {
     pub max_seqlen_k: usize,
     pub max_context_len: usize,
     pub disable_flash_attn: Option<bool>,
+    pub seqlens: Option<Vec<u32>>,
 }
 
 #[allow(dead_code)]
