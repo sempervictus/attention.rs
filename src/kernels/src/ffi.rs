@@ -490,4 +490,17 @@ extern "C" {
         topk: i32,
         stream: i64,
     );
+
+    pub fn sampling_f32(
+        logits_d: *const f32,
+        out_tokens_d: *mut i32,
+        B: i32,
+        V: i32,
+        K: i32,
+        temperature: f32,
+        top_p: f32,
+        seed: u64,
+        token_pos: u64,
+        stream: i64,
+    );
 }
