@@ -503,4 +503,30 @@ extern "C" {
         token_pos: u64,
         stream: i64,
     );
+
+    pub fn sampling_f16(
+        logits_d: *const c_void,
+        out_tokens_d: *mut i32,
+        B: i32,
+        V: i32,
+        K: i32,
+        temperature: f32,
+        top_p: f32,
+        seed: u64,
+        token_pos: u64,
+        stream: i64,
+    );
+
+    pub fn sampling_bf16(
+        logits_d: *const c_void,
+        out_tokens_d: *mut i32,
+        B: i32,
+        V: i32,
+        K: i32,
+        temperature: f32,
+        top_p: f32,
+        seed: u64,
+        token_pos: u64,
+        stream: i64,
+    );
 }

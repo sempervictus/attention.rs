@@ -1,6 +1,54 @@
+/**
+ * @brief CUDA kernel for GPU-accelerated top-k/top-p sampling with softmax.
+ * Copyright (c) 2025, Guoqing Bao.  All rights reserved.
+ *
+ * This kernel performs efficient sampling from logits by:
+ *  - Stage A: Tiled local top-k extraction per vocabulary chunk
+ *  - Stage B: Global top-k merge, softmax, top-p filtering, and sampling
+ * Uses Philox RNG for deterministic, reproducible sampling across runs.
+ * Supports float32, float16, and bfloat16 input logits.
+ *
+ * This CUDA kernel is developed for vLLM.rs project:
+ * https://github.com/guoqingbao/attention.rs/tree/main/src/kernels/src/gpu_sampling.cu
+ *
+ * @details
+ * - Two-stage algorithm: local top-k per tile, then global merge and sample.
+ * - Supports top-k values of 32, 64, or 128 via template instantiation.
+ * - Uses CUB block radix sort for efficient in-block sorting.
+ * - Temperature scaling and top-p (nucleus) sampling within top-k.
+ * - Philox4x32-10 PRNG for reproducible sampling with (seed, token_pos) keys.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include "gpu_sampling.cuh"
 #include <cub/block/block_radix_sort.cuh>
 #include <math_constants.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+
+// Helper to convert from input type to float
+template<typename T>
+__device__ __forceinline__ float to_float(T x);
+
+template<>
+__device__ __forceinline__ float to_float<float>(float x) { return x; }
+
+template<>
+__device__ __forceinline__ float to_float<__half>(__half x) { return __half2float(x); }
+
+template<>
+__device__ __forceinline__ float to_float<__nv_bfloat16>(__nv_bfloat16 x) { return __bfloat162float(x); }
 
 static __device__ __forceinline__ uint4 philox4x32_10(uint2 key, uint4 ctr) {
   const uint32_t M0 = 0xD2511F53u;
@@ -56,9 +104,10 @@ static __device__ __forceinline__ void merge_topk_desc_safe(
 //
 // One block handles one tile of the vocab for one batch element.
 // It sorts a CHUNK of logits within the block (descending) and writes top-K.
-template<int K, int BLOCK_THREADS, int ITEMS_PER_THREAD>
+// Template parameter T: input logit type (float, __half, __nv_bfloat16)
+template<int K, int BLOCK_THREADS, int ITEMS_PER_THREAD, typename T>
 __global__ void stageA_local_topk(
-    const float* __restrict__ logits, // [B,V]
+    const T* __restrict__ logits, // [B,V]
     int B, int V,
     float temperature,
     int tiles_per_row,                // number of tiles along vocab
@@ -72,7 +121,7 @@ __global__ void stageA_local_topk(
   constexpr int CHUNK = BLOCK_THREADS * ITEMS_PER_THREAD;
   int base = tile * CHUNK;
 
-  const float* row = logits + (size_t)b * (size_t)V;
+  const T* row = logits + (size_t)b * (size_t)V;
 
   float invT = (temperature > 1e-6f) ? (1.0f / temperature) : 1e6f;
 
@@ -83,7 +132,7 @@ __global__ void stageA_local_topk(
   for (int it = 0; it < ITEMS_PER_THREAD; ++it) {
     int idx = base + threadIdx.x + it * BLOCK_THREADS;
     if (idx < V) {
-      v[it] = row[idx] * invT;
+      v[it] = to_float(row[idx]) * invT;
       i[it] = idx;
     } else {
       v[it] = -CUDART_INF_F;
@@ -214,9 +263,9 @@ __global__ void stageB_reduce_and_sample(
   }
 }
 
-template<int K>
+template<int K, typename T>
 void gpu_topk_topp_sample(
-    const float* logits_d,
+    const T* logits_d,
     int* out_tokens_d,
     const SamplerParams& p,
     cudaStream_t stream
@@ -246,7 +295,7 @@ void gpu_topk_topp_sample(
   // Stage A: grid = (B, tiles)
   dim3 gridA(p.B, tiles, 1);
   dim3 blockA(BLOCK_THREADS, 1, 1);
-  stageA_local_topk<K, BLOCK_THREADS, ITEMS_PER_THREAD>
+  stageA_local_topk<K, BLOCK_THREADS, ITEMS_PER_THREAD, T>
       <<<gridA, blockA, 0, stream>>>(
           logits_d, p.B, p.V, p.temperature, tiles, tile_vals_d, tile_idx_d);
 
@@ -263,10 +312,20 @@ void gpu_topk_topp_sample(
   CUDA_CHECK(cudaFreeAsync(tile_idx_d,  stream));
 }
 
-// Explicit instantiations
-template void gpu_topk_topp_sample<32>(const float*, int*, const SamplerParams&, cudaStream_t);
-template void gpu_topk_topp_sample<64>(const float*, int*, const SamplerParams&, cudaStream_t);
-template void gpu_topk_topp_sample<128>(const float*, int*, const SamplerParams&, cudaStream_t);
+// Explicit instantiations for float
+template void gpu_topk_topp_sample<32, float>(const float*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<64, float>(const float*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<128, float>(const float*, int*, const SamplerParams&, cudaStream_t);
+
+// Explicit instantiations for __half (f16)
+template void gpu_topk_topp_sample<32, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<64, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<128, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
+
+// Explicit instantiations for __nv_bfloat16 (bf16)
+template void gpu_topk_topp_sample<32, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<64, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<128, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
 
 
 extern "C" void sampling_f32(
@@ -292,11 +351,74 @@ extern "C" void sampling_f32(
     cudaStream_t stream = (cudaStream_t)stream_ptr;
 
     if (K <= 32) {
-        gpu_topk_topp_sample<32>(logits_d, out_tokens_d, p, stream);
+        gpu_topk_topp_sample<32, float>(logits_d, out_tokens_d, p, stream);
     } else if (K <= 64) {
-        gpu_topk_topp_sample<64>(logits_d, out_tokens_d, p, stream);
+        gpu_topk_topp_sample<64, float>(logits_d, out_tokens_d, p, stream);
     } else {
-        // Fallback or max supported
-        gpu_topk_topp_sample<128>(logits_d, out_tokens_d, p, stream);
+        gpu_topk_topp_sample<128, float>(logits_d, out_tokens_d, p, stream);
+    }
+}
+
+extern "C" void sampling_f16(
+    const void* logits_d,
+    int* out_tokens_d,
+    int B,
+    int V,
+    int K,
+    float temperature,
+    float top_p,
+    uint64_t seed,
+    uint64_t token_pos,
+    int64_t stream_ptr) 
+{
+    SamplerParams p;
+    p.B = B;
+    p.V = V;
+    p.temperature = temperature;
+    p.top_p = top_p;
+    p.seed = seed;
+    p.token_pos = token_pos;
+
+    cudaStream_t stream = (cudaStream_t)stream_ptr;
+    const __half* logits = reinterpret_cast<const __half*>(logits_d);
+
+    if (K <= 32) {
+        gpu_topk_topp_sample<32, __half>(logits, out_tokens_d, p, stream);
+    } else if (K <= 64) {
+        gpu_topk_topp_sample<64, __half>(logits, out_tokens_d, p, stream);
+    } else {
+        gpu_topk_topp_sample<128, __half>(logits, out_tokens_d, p, stream);
+    }
+}
+
+extern "C" void sampling_bf16(
+    const void* logits_d,
+    int* out_tokens_d,
+    int B,
+    int V,
+    int K,
+    float temperature,
+    float top_p,
+    uint64_t seed,
+    uint64_t token_pos,
+    int64_t stream_ptr) 
+{
+    SamplerParams p;
+    p.B = B;
+    p.V = V;
+    p.temperature = temperature;
+    p.top_p = top_p;
+    p.seed = seed;
+    p.token_pos = token_pos;
+
+    cudaStream_t stream = (cudaStream_t)stream_ptr;
+    const __nv_bfloat16* logits = reinterpret_cast<const __nv_bfloat16*>(logits_d);
+
+    if (K <= 32) {
+        gpu_topk_topp_sample<32, __nv_bfloat16>(logits, out_tokens_d, p, stream);
+    } else if (K <= 64) {
+        gpu_topk_topp_sample<64, __nv_bfloat16>(logits, out_tokens_d, p, stream);
+    } else {
+        gpu_topk_topp_sample<128, __nv_bfloat16>(logits, out_tokens_d, p, stream);
     }
 }
