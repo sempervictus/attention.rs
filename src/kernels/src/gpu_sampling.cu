@@ -322,10 +322,12 @@ template void gpu_topk_topp_sample<32, __half>(const __half*, int*, const Sample
 template void gpu_topk_topp_sample<64, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<128, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
 
-// Explicit instantiations for __nv_bfloat16 (bf16)
+// Explicit instantiations for __nv_bfloat16 (bf16) - requires sm_80+
+#ifndef NO_BF16_KERNEL
 template void gpu_topk_topp_sample<32, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<64, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<128, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
+#endif
 
 
 extern "C" void sampling_f32(
@@ -412,6 +414,7 @@ extern "C" void sampling_bf16(
     p.token_pos = token_pos;
 
     cudaStream_t stream = (cudaStream_t)stream_ptr;
+  #ifndef NO_BF16_KERNEL
     const __nv_bfloat16* logits = reinterpret_cast<const __nv_bfloat16*>(logits_d);
 
     if (K <= 32) {
@@ -421,4 +424,5 @@ extern "C" void sampling_bf16(
     } else {
         gpu_topk_topp_sample<128, __nv_bfloat16>(logits, out_tokens_d, p, stream);
     }
+  #endif
 }
