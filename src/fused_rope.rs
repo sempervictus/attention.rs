@@ -124,12 +124,10 @@ impl FusedRope {
         let d_u32 = d as u32;
 
         // Clone for output
-        let q_out = q.clone();
-        let k_out = k.clone();
 
         // Get storage
-        let q_out_storage = q_out.storage_and_layout().0;
-        let k_out_storage = k_out.storage_and_layout().0;
+        let q_out_storage = q.storage_and_layout().0;
+        let k_out_storage = k.storage_and_layout().0;
         let cos_storage = cos.storage_and_layout().0;
         let sin_storage = sin.storage_and_layout().0;
         let pos_storage = positions.storage_and_layout().0;
@@ -309,7 +307,7 @@ impl FusedRope {
             _ => candle_core::bail!("FusedRope only supports F32, F16, BF16, got {:?}", dtype),
         }
 
-        Ok((q_out, k_out))
+        Ok((q.to_owned(), k.to_owned()))
     }
 
     /// Apply fused rotary embedding in-place.
