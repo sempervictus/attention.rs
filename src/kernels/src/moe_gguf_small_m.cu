@@ -179,7 +179,6 @@ __global__ void moe_gemm_gguf_small_m_kernel(
 // Launch macro for different quantization types
 #define LAUNCH_MOE_GGUF_SMALL_M(qk, qi, block_q_t, vdr, vec_dot_q_cuda) \
     /* Calculate Shared Memory needed for the Input Vector (y) */ \
-    const int shared_bytes = (kx_padded / QK8_1) * sizeof(block_q8_1); \
     moe_gemm_gguf_small_m_kernel<qk, qi, block_q_t, vdr, vec_dot_q_cuda> \
         <<<grid_dim, block_dim, shared_bytes, stream>>>(\
         weights, y_q8_1,\
@@ -226,6 +225,7 @@ extern "C" void moe_gemm_gguf_small_m(
     const int nWraps = 4; // Warps per block
     dim3 grid_dim(ceil_div_small_m(size_n, nWraps), size_m, 1);
     dim3 block_dim(WARP_SIZE, nWraps, 1);
+    const int shared_bytes = (kx_padded / QK8_1) * sizeof(block_q8_1); \
 
     // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3, Q5K: 4, Q6K: 5
     switch (quant_type) {
