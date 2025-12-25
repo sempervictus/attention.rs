@@ -279,21 +279,40 @@ pub fn moe_gemm_gguf(
                     _ => candle::bail!("input must be a cuda tensor"),
                 };
 
-                ffi::moe_gemm_gguf(
-                    *input.device_ptr() as *const f32, // [size_m or size_m/topk, size_k]
-                    weight_ptr as *const c_void,       // [num_experts, size_n, size_k]
-                    *sorted_token_ids.device_ptr() as *const i32,
-                    *experts_ids.device_ptr() as *const i32,
-                    topk_weights_ptr,
-                    *output.device_ptr() as *mut c_void, // [size_m, size_n]
-                    num_experts as i32,
-                    topk as i32,
-                    size_m as i32,
-                    size_n as i32,
-                    size_k as i32,
-                    gguf_dtype as i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5 (for weight)
-                    stream as i64,
-                );
+                // Use optimized small-M kernel for batch size < 8 (decode scenarios)
+                if size_m <= 8 {
+                    ffi::moe_gemm_gguf_small_m(
+                        *input.device_ptr() as *const f32, // [size_m or size_m/topk, size_k]
+                        weight_ptr as *const c_void,       // [num_experts, size_n, size_k]
+                        *sorted_token_ids.device_ptr() as *const i32,
+                        *experts_ids.device_ptr() as *const i32,
+                        topk_weights_ptr,
+                        *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                        num_experts as i32,
+                        topk as i32,
+                        size_m as i32,
+                        size_n as i32,
+                        size_k as i32,
+                        gguf_dtype as i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5 (for weight)
+                        stream as i64,
+                    );
+                } else {
+                    ffi::moe_gemm_gguf(
+                        *input.device_ptr() as *const f32, // [size_m or size_m/topk, size_k]
+                        weight_ptr as *const c_void,       // [num_experts, size_n, size_k]
+                        *sorted_token_ids.device_ptr() as *const i32,
+                        *experts_ids.device_ptr() as *const i32,
+                        topk_weights_ptr,
+                        *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                        num_experts as i32,
+                        topk as i32,
+                        size_m as i32,
+                        size_n as i32,
+                        size_k as i32,
+                        gguf_dtype as i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5 (for weight)
+                        stream as i64,
+                    );
+                }
             }
         }
 

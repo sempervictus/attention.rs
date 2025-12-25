@@ -463,6 +463,23 @@ extern "C" {
         stream: i64,
     );
 
+    // Optimized kernel for small M (batch size 1-8) with input caching
+    pub fn moe_gemm_gguf_small_m(
+        input: *const f32,      // input [size_m, size_k]
+        weights: *const c_void, // weights [num_experts, size_n, size_k]
+        sorted_token_ids: *const i32,
+        expert_ids: *const i32,
+        topk_weights: *const f32, // device ptr or nullptr
+        output: *mut c_void,      // float output [size_m, size_n]
+        num_experts: i32,
+        topk: i32,
+        size_m: i32,
+        size_n: i32,
+        size_k: i32,
+        gguf_dtype: i32, // Q8_0: 0, Q4K: 1, Q2K: 2, Q3k: 3,  Q5K: 4, Q6K: 5  (for weights)
+        stream: i64,
+    );
+
     pub fn moe_gemm_gguf_prefill(
         input: *const c_void, // input [size_m, size_k]
         weights: *const u8,   // weights [num_experts, size_n, size_k]
