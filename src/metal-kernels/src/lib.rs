@@ -1044,3 +1044,99 @@ pub fn call_update_scales(
     encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
     Ok(())
 }
+
+/// Fused Rotary Position Embedding with position selection
+///
+/// This kernel fuses index_select + RoPE into a single kernel.
+/// Supports GQA (different head counts for Q and K).
+///
+/// # Arguments
+/// * `q` - Query buffer [batch, num_q_heads, seq_len, head_dim]
+/// * `k` - Key buffer [batch, num_kv_heads, seq_len, head_dim]
+/// * `cos` - Full cosine table [max_seq_len, head_dim/2]
+/// * `sin` - Full sine table [max_seq_len, head_dim/2]
+/// * `positions` - Position indices [seq_len] (i64)
+/// * `q_bh` - batch * num_q_heads
+/// * `k_bh` - batch * num_kv_heads
+/// * `seq_len` - sequence length
+/// * `d` - head_dim
+/// * `is_interleaved` - if true, use interleaved RoPE layout
+#[allow(clippy::too_many_arguments)]
+pub fn call_fused_rope(
+    device: &Device,
+    ep: impl EncoderProvider,
+    kernels: &Kernels,
+    ty: DType,
+    q: &Buffer,
+    q_offset: usize,
+    k: &Buffer,
+    k_offset: usize,
+    cos: &Buffer,
+    cos_offset: usize,
+    sin: &Buffer,
+    sin_offset: usize,
+    positions: &Buffer,
+    positions_offset: usize,
+    q_bh: u32,
+    k_bh: u32,
+    seq_len: u32,
+    d: u32,
+    is_interleaved: bool,
+) -> Result<(), MetalKernelError> {
+    let type_name = match ty {
+        DType::F32 => "f32",
+        DType::BF16 => "bf16",
+        DType::F16 => "f16",
+        other => {
+            return Err(MetalKernelError::DTypeMismatch {
+                expected: vec![DType::F32, DType::F16, DType::BF16],
+                got: other,
+            })
+        }
+    };
+
+    let name = if is_interleaved {
+        format!("fused_rope_i_{}", type_name)
+    } else {
+        format!("fused_rope_{}", type_name)
+    };
+
+    let pipeline = kernels.load_pipeline(device, name)?;
+    let encoder = ep.encoder();
+    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    encoder.set_compute_pipeline_state(&pipeline);
+
+    set_params!(
+        encoder,
+        (
+            (q, q_offset),
+            (k, k_offset),
+            (cos, cos_offset),
+            (sin, sin_offset),
+            (positions, positions_offset),
+            q_bh,
+            k_bh,
+            seq_len,
+            d
+        )
+    );
+
+    // Calculate total number of pairs
+    let half_d = d / 2;
+    let total_pairs = ((q_bh + k_bh) * seq_len * half_d) as u64;
+
+    // Dispatch with 256 threads per threadgroup
+    let threads_per_threadgroup = MTLSize {
+        width: 256,
+        height: 1,
+        depth: 1,
+    };
+    let thread_groups_count = MTLSize {
+        width: (total_pairs + 255) / 256,
+        height: 1,
+        depth: 1,
+    };
+
+    encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
+    Ok(())
+}

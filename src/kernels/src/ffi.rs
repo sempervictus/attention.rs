@@ -529,4 +529,85 @@ extern "C" {
         token_pos: u64,
         stream: i64,
     );
+
+    // Fused Rotary Position Embedding (RoPE) kernels - with position selection
+    // Non-interleaved versions - support GQA, fuses index_select
+    pub fn fused_rope_f32(
+        q: *mut f32,
+        k: *mut f32,
+        cos: *const f32,
+        sin: *const f32,
+        positions: *const i64, // Position indices [seq_len]
+        q_bh: u32,
+        k_bh: u32,
+        seq_len: u32,
+        d: u32,
+        stream: i64,
+    );
+
+    pub fn fused_rope_f16(
+        q: *mut c_void,
+        k: *mut c_void,
+        cos: *const c_void,
+        sin: *const c_void,
+        positions: *const i64,
+        q_bh: u32,
+        k_bh: u32,
+        seq_len: u32,
+        d: u32,
+        stream: i64,
+    );
+
+    pub fn fused_rope_bf16(
+        q: *mut c_void,
+        k: *mut c_void,
+        cos: *const c_void,
+        sin: *const c_void,
+        positions: *const i64,
+        q_bh: u32,
+        k_bh: u32,
+        seq_len: u32,
+        d: u32,
+        stream: i64,
+    );
+
+    // Interleaved versions - support GQA, fuses index_select
+    pub fn fused_rope_i_f32(
+        q: *mut f32,
+        k: *mut f32,
+        cos: *const f32,
+        sin: *const f32,
+        positions: *const i64,
+        q_bh: u32,
+        k_bh: u32,
+        seq_len: u32,
+        d: u32,
+        stream: i64,
+    );
+
+    pub fn fused_rope_i_f16(
+        q: *mut c_void,
+        k: *mut c_void,
+        cos: *const c_void,
+        sin: *const c_void,
+        positions: *const i64,
+        q_bh: u32,
+        k_bh: u32,
+        seq_len: u32,
+        d: u32,
+        stream: i64,
+    );
+
+    pub fn fused_rope_i_bf16(
+        q: *mut c_void,
+        k: *mut c_void,
+        cos: *const c_void,
+        sin: *const c_void,
+        positions: *const i64,
+        q_bh: u32,
+        k_bh: u32,
+        seq_len: u32,
+        d: u32,
+        stream: i64,
+    );
 }
