@@ -531,13 +531,14 @@ extern "C" {
     );
 
     // Fused Rotary Position Embedding (RoPE) kernels
-    // Non-interleaved versions
+    // Non-interleaved versions - support GQA with separate q_bh and k_bh
     pub fn fused_rope_f32(
         q: *mut f32,
         k: *mut f32,
         cos: *const f32,
         sin: *const f32,
-        bh: u32,
+        q_bh: u32,
+        k_bh: u32,
         td: u32,
         d: u32,
         stride_b: u32,
@@ -549,7 +550,8 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
-        bh: u32,
+        q_bh: u32,
+        k_bh: u32,
         td: u32,
         d: u32,
         stride_b: u32,
@@ -561,20 +563,22 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
-        bh: u32,
+        q_bh: u32,
+        k_bh: u32,
         td: u32,
         d: u32,
         stride_b: u32,
         stream: i64,
     );
 
-    // Interleaved versions
+    // Interleaved versions - support GQA with separate q_bh and k_bh
     pub fn fused_rope_i_f32(
         q: *mut f32,
         k: *mut f32,
         cos: *const f32,
         sin: *const f32,
-        bh: u32,
+        q_bh: u32,
+        k_bh: u32,
         td: u32,
         stride_b: u32,
         stream: i64,
@@ -585,7 +589,8 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
-        bh: u32,
+        q_bh: u32,
+        k_bh: u32,
         td: u32,
         stride_b: u32,
         stream: i64,
@@ -596,7 +601,8 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
-        bh: u32,
+        q_bh: u32,
+        k_bh: u32,
         td: u32,
         stride_b: u32,
         stream: i64,

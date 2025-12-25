@@ -2,6 +2,7 @@
 //!
 //! This module provides a high-performance fused rotary embedding implementation
 //! that operates on both Q and K tensors simultaneously in-place.
+//! Supports Grouped Query Attention (GQA) where Q and K have different head counts.
 
 use candle_core::{DType, Result, Tensor};
 
@@ -12,14 +13,15 @@ use kernels::ffi;
 ///
 /// Applies rotary position embedding to Q and K tensors in-place using optimized CUDA kernels.
 /// Supports both interleaved and non-interleaved layouts.
+/// Supports GQA where Q and K have different numbers of heads.
 pub struct FusedRope;
 
 impl FusedRope {
     /// Apply fused rotary embedding to Q and K tensors in-place.
     ///
     /// # Arguments
-    /// * `q` - Query tensor, shape [batch, num_heads, seq_len, head_dim]
-    /// * `k` - Key tensor, shape [batch, num_heads, seq_len, head_dim]
+    /// * `q` - Query tensor, shape [batch, num_q_heads, seq_len, head_dim]
+    /// * `k` - Key tensor, shape [batch, num_kv_heads, seq_len, head_dim]
     /// * `cos` - Cosine values, shape [seq_len, head_dim/2]
     /// * `sin` - Sine values, shape [seq_len, head_dim/2]
     /// * `is_interleaved` - If true, uses interleaved layout (adjacent pairs)
@@ -37,13 +39,14 @@ impl FusedRope {
         use candle_core::cuda_backend::cudarc::driver::DevicePtr;
         use candle_core::cuda_backend::CudaStorageSlice;
 
-        // Validate inputs
-        let (b, h, t, d) = q.dims4()?;
-        let (kb, kh, kt, kd) = k.dims4()?;
+        // Validate inputs - Q and K can have different head counts (GQA)
+        let (b, q_h, t, d) = q.dims4()?;
+        let (kb, k_h, kt, kd) = k.dims4()?;
 
-        if (b, h, t, d) != (kb, kh, kt, kd) {
+        // Batch, seq_len, head_dim must match; heads can differ
+        if b != kb || t != kt || d != kd {
             candle_core::bail!(
-                "Q and K shapes must match, got Q: {:?}, K: {:?}",
+                "Q and K batch/seq_len/head_dim must match, got Q: {:?}, K: {:?}",
                 q.shape(),
                 k.shape()
             );
@@ -109,8 +112,9 @@ impl FusedRope {
         let dev = q.device().as_cuda_device()?;
         let stream = *dev.cu_stream() as i64;
 
-        // Calculate kernel parameters
-        let bh = (b * h) as u32;
+        // Calculate kernel parameters - separate bh for Q and K
+        let q_bh = (b * q_h) as u32;
+        let k_bh = (b * k_h) as u32;
         let td = (t * d) as u32;
         let d_param = d as u32;
         let stride_b = 0u32; // No batch stride for now (shared cos/sin across batch)
@@ -138,13 +142,10 @@ impl FusedRope {
             _ => candle_core::bail!("sin must be on CUDA device"),
         };
 
-        // Note: The kernel operates in-place on q and k
-        // We need to clone them first to avoid modifying the originals
-        // unless we explicitly want in-place operation
+        // Clone for output
         let q_out = q.clone();
         let k_out = k.clone();
 
-        // Get mutable storage for output
         let q_out_storage = q_out.storage_and_layout().0;
         let k_out_storage = k_out.storage_and_layout().0;
 
@@ -179,11 +180,11 @@ impl FusedRope {
                 unsafe {
                     if is_interleaved {
                         ffi::fused_rope_i_f32(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, stride_b, stream,
                         );
                     } else {
                         ffi::fused_rope_f32(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, d_param, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, d_param, stride_b, stream,
                         );
                     }
                 }
@@ -209,11 +210,11 @@ impl FusedRope {
                 unsafe {
                     if is_interleaved {
                         ffi::fused_rope_i_f16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, stride_b, stream,
                         );
                     } else {
                         ffi::fused_rope_f16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, d_param, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, d_param, stride_b, stream,
                         );
                     }
                 }
@@ -239,11 +240,11 @@ impl FusedRope {
                 unsafe {
                     if is_interleaved {
                         ffi::fused_rope_i_bf16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, stride_b, stream,
                         );
                     } else {
                         ffi::fused_rope_bf16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, d_param, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, d_param, stride_b, stream,
                         );
                     }
                 }
@@ -261,8 +262,8 @@ impl FusedRope {
     /// This modifies the input tensors directly and returns Result<()>.
     ///
     /// # Arguments
-    /// * `q` - Query tensor, shape [batch, num_heads, seq_len, head_dim] (modified in-place)
-    /// * `k` - Key tensor, shape [batch, num_heads, seq_len, head_dim] (modified in-place)
+    /// * `q` - Query tensor, shape [batch, num_q_heads, seq_len, head_dim] (modified in-place)
+    /// * `k` - Key tensor, shape [batch, num_kv_heads, seq_len, head_dim] (modified in-place)
     /// * `cos` - Cosine values, shape [seq_len, head_dim/2]
     /// * `sin` - Sine values, shape [seq_len, head_dim/2]
     /// * `is_interleaved` - If true, uses interleaved layout (adjacent pairs)
@@ -280,13 +281,13 @@ impl FusedRope {
         use candle_core::cuda_backend::cudarc::driver::DevicePtr;
         use candle_core::cuda_backend::CudaStorageSlice;
 
-        // Validate inputs
-        let (b, h, t, d) = q.dims4()?;
-        let (kb, kh, kt, kd) = k.dims4()?;
+        // Validate inputs - Q and K can have different head counts (GQA)
+        let (b, q_h, t, d) = q.dims4()?;
+        let (kb, k_h, kt, kd) = k.dims4()?;
 
-        if (b, h, t, d) != (kb, kh, kt, kd) {
+        if b != kb || t != kt || d != kd {
             candle_core::bail!(
-                "Q and K shapes must match, got Q: {:?}, K: {:?}",
+                "Q and K batch/seq_len/head_dim must match, got Q: {:?}, K: {:?}",
                 q.shape(),
                 k.shape()
             );
@@ -334,8 +335,9 @@ impl FusedRope {
         let dev = q.device().as_cuda_device()?;
         let stream = *dev.cu_stream() as i64;
 
-        // Calculate kernel parameters
-        let bh = (b * h) as u32;
+        // Calculate kernel parameters - separate bh for Q and K
+        let q_bh = (b * q_h) as u32;
+        let k_bh = (b * k_h) as u32;
         let td = (t * d) as u32;
         let d_param = d as u32;
         let stride_b = 0u32;
@@ -385,11 +387,11 @@ impl FusedRope {
                 unsafe {
                     if is_interleaved {
                         ffi::fused_rope_i_f32(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, stride_b, stream,
                         );
                     } else {
                         ffi::fused_rope_f32(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, d_param, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, d_param, stride_b, stream,
                         );
                     }
                 }
@@ -415,11 +417,11 @@ impl FusedRope {
                 unsafe {
                     if is_interleaved {
                         ffi::fused_rope_i_f16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, stride_b, stream,
                         );
                     } else {
                         ffi::fused_rope_f16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, d_param, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, d_param, stride_b, stream,
                         );
                     }
                 }
@@ -445,11 +447,11 @@ impl FusedRope {
                 unsafe {
                     if is_interleaved {
                         ffi::fused_rope_i_bf16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, stride_b, stream,
                         );
                     } else {
                         ffi::fused_rope_bf16(
-                            q_ptr, k_ptr, cos_ptr, sin_ptr, bh, td, d_param, stride_b, stream,
+                            q_ptr, k_ptr, cos_ptr, sin_ptr, q_bh, k_bh, td, d_param, stride_b, stream,
                         );
                     }
                 }
