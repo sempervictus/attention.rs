@@ -530,18 +530,18 @@ extern "C" {
         stream: i64,
     );
 
-    // Fused Rotary Position Embedding (RoPE) kernels
-    // Non-interleaved versions - support GQA with separate q_bh and k_bh
+    // Fused Rotary Position Embedding (RoPE) kernels - with position selection
+    // Non-interleaved versions - support GQA, fuses index_select
     pub fn fused_rope_f32(
         q: *mut f32,
         k: *mut f32,
         cos: *const f32,
         sin: *const f32,
+        positions: *const i64, // Position indices [seq_len]
         q_bh: u32,
         k_bh: u32,
-        td: u32,
+        seq_len: u32,
         d: u32,
-        stride_b: u32,
         stream: i64,
     );
 
@@ -550,11 +550,11 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
+        positions: *const i64,
         q_bh: u32,
         k_bh: u32,
-        td: u32,
+        seq_len: u32,
         d: u32,
-        stride_b: u32,
         stream: i64,
     );
 
@@ -563,24 +563,25 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
+        positions: *const i64,
         q_bh: u32,
         k_bh: u32,
-        td: u32,
+        seq_len: u32,
         d: u32,
-        stride_b: u32,
         stream: i64,
     );
 
-    // Interleaved versions - support GQA with separate q_bh and k_bh
+    // Interleaved versions - support GQA, fuses index_select
     pub fn fused_rope_i_f32(
         q: *mut f32,
         k: *mut f32,
         cos: *const f32,
         sin: *const f32,
+        positions: *const i64,
         q_bh: u32,
         k_bh: u32,
-        td: u32,
-        stride_b: u32,
+        seq_len: u32,
+        d: u32,
         stream: i64,
     );
 
@@ -589,10 +590,11 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
+        positions: *const i64,
         q_bh: u32,
         k_bh: u32,
-        td: u32,
-        stride_b: u32,
+        seq_len: u32,
+        d: u32,
         stream: i64,
     );
 
@@ -601,10 +603,11 @@ extern "C" {
         k: *mut c_void,
         cos: *const c_void,
         sin: *const c_void,
+        positions: *const i64,
         q_bh: u32,
         k_bh: u32,
-        td: u32,
-        stride_b: u32,
+        seq_len: u32,
+        d: u32,
         stream: i64,
     );
 }

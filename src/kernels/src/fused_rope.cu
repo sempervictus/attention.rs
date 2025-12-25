@@ -1,19 +1,17 @@
 /**
- * @brief Fused Rotary Position Embedding (RoPE) CUDA Kernels - GQA Support
- * Copyright (c) 2025, Guoqing Bao. All rights reserved.
+ * @brief Fused Rotary Position Embedding (RoPE) CUDA Kernels - With Position Selection
+ * Copyright (c) 2025, Guoqingbao. All rights reserved.
  *
- * This kernel performs fused rotary position embedding on Q and K tensors in-place:
- *  - fused_rope: Non-interleaved version (pairs at offset d/2)
- *  - fused_rope_i: Interleaved version (adjacent pairs)
+ * This kernel fuses TWO operations:
+ *   1. Position-based cos/sin selection (eliminates index_select kernel)
+ *   2. Rotary position embedding application
  *
- * Supports Grouped Query Attention (GQA) where Q and K have different head counts.
- *
- * Optimizations:
- *  - Vectorized load/store AND compute (half2, bfloat162, float2)
- *  - Native compute: F32 and BF16 compute natively, only F16 converts to F32
- *  - Shared memory for cos/sin caching to reduce global memory traffic
- *  - Single kernel launch for both Q and K (reduces launch overhead)
- *  - In-place operation (reduces memory allocation/bandwidth)
+ * Performance optimizations:
+ *  - Single kernel replaces index_select + rope (2 kernels -> 1)
+ *  - No shared memory (registers only)
+ *  - Grid-stride loop for all tensor sizes
+ *  - Native BF16/F32 compute, F16 -> F32 for precision
+ *  - Vectorized float2/half2/bfloat162 access
  *
  * Licensed under the Apache License, Version 2.0
  */
@@ -23,358 +21,383 @@
 #include <cuda_bf16.h>
 #include <stdint.h>
 
-// Block configuration
-constexpr int BLOCK_SIZE = 256;
+constexpr int BLOCK_SIZE = 128;
 
 // ============================================================================
-// Vectorized Types and Operations for Native Compute
-// ============================================================================
-
-// --- float2 native operations (F32 computes natively) ---
-__device__ __forceinline__ float2 rope_rotate_f32(float2 v, float c, float s) {
-    float2 result;
-    result.x = v.x * c - v.y * s;
-    result.y = v.x * s + v.y * c;
-    return result;
-}
-
-// --- __nv_bfloat162 native operations (BF16 computes natively) ---
-#ifndef NO_BF16_KERNEL
-__device__ __forceinline__ __nv_bfloat162 rope_rotate_bf16(__nv_bfloat162 v, __nv_bfloat16 c, __nv_bfloat16 s) {
-    __nv_bfloat162 result;
-    result.x = __hsub(__hmul(v.x, c), __hmul(v.y, s));
-    result.y = __hadd(__hmul(v.x, s), __hmul(v.y, c));
-    return result;
-}
-#endif
-
-// --- __half2 operations (F16 converts to F32 for precision) ---
-__device__ __forceinline__ __half2 rope_rotate_f16(__half2 v, __half c, __half s) {
-    float vx = __half2float(v.x);
-    float vy = __half2float(v.y);
-    float fc = __half2float(c);
-    float fs = __half2float(s);
-    
-    __half2 result;
-    result.x = __float2half(vx * fc - vy * fs);
-    result.y = __float2half(vx * fs + vy * fc);
-    return result;
-}
-
-// ============================================================================
-// Single-tensor RoPE kernels (process Q or K independently)
+// Interleaved RoPE with Position Selection
 // ============================================================================
 
 /**
- * @brief F32 Interleaved kernel for single tensor
+ * @brief F32 Interleaved kernel with position-based cos/sin selection
+ * 
+ * @param q Query tensor [batch, num_q_heads, seq_len, head_dim]
+ * @param k Key tensor [batch, num_kv_heads, seq_len, head_dim]
+ * @param cos Full cos tensor [max_seq_len, head_dim/2]
+ * @param sin Full sin tensor [max_seq_len, head_dim/2]
+ * @param positions Position indices [seq_len] - used to select cos/sin rows
+ * @param q_num_pairs Total Q pairs = (batch * num_q_heads * seq_len * head_dim) / 2
+ * @param k_num_pairs Total K pairs
+ * @param seq_len Sequence length
+ * @param half_d head_dim / 2
  */
-__global__ void rope_i_f32_kernel(
-    float2* __restrict__ x,  // Treat as float2 for vectorized access
-    const float* __restrict__ cos,
-    const float* __restrict__ sin,
-    const uint32_t num_pairs,  // (bh * td) / 2
-    const uint32_t half_td,
-    const uint32_t stride_b
+__global__ void __launch_bounds__(BLOCK_SIZE)
+fused_rope_i_f32_kernel(
+    float2* __restrict__ q,
+    float2* __restrict__ k,
+    const float* __restrict__ cos,  // [max_seq_len, half_d]
+    const float* __restrict__ sin,  // [max_seq_len, half_d]
+    const int64_t* __restrict__ positions,  // [seq_len]
+    const uint32_t q_num_pairs,
+    const uint32_t k_num_pairs,
+    const uint32_t seq_len,
+    const uint32_t half_d  // head_dim / 2
 ) {
-    __shared__ float s_cos[BLOCK_SIZE];
-    __shared__ float s_sin[BLOCK_SIZE];
-
-    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_pairs) return;
-
-    uint32_t rope_idx = idx % half_td;
-    if (stride_b > 0) {
-        uint32_t b_idx = (2 * idx) / stride_b;
-        rope_idx += b_idx * half_td;
+    const uint32_t total_pairs = q_num_pairs + k_num_pairs;
+    
+    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < total_pairs; 
+         idx += gridDim.x * blockDim.x) {
+        
+        const bool is_q = (idx < q_num_pairs);
+        const uint32_t local_idx = is_q ? idx : (idx - q_num_pairs);
+        
+        // Calculate which position and which dimension
+        // local_idx = (batch * heads * seq_len * head_dim/2) flattened
+        // We need to find: which seq position (t) and which dim (d)
+        const uint32_t pairs_per_seq = half_d;  // head_dim/2 pairs per sequence position
+        const uint32_t t_and_d = local_idx;  // Relative to some (b,h)
+        const uint32_t d_idx = t_and_d % half_d;
+        const uint32_t t_idx = (t_and_d / half_d) % seq_len;
+        
+        // Look up position for this sequence index
+        const int64_t pos = positions[t_idx];
+        
+        // Index into full cos/sin: [pos, d_idx]
+        const uint32_t cs_idx = pos * half_d + d_idx;
+        const float c = cos[cs_idx];
+        const float s = sin[cs_idx];
+        
+        // Load, rotate, store
+        float2* ptr = is_q ? q : k;
+        float2 v = ptr[local_idx];
+        
+        float2 result;
+        result.x = v.x * c - v.y * s;
+        result.y = v.x * s + v.y * c;
+        
+        ptr[local_idx] = result;
     }
-
-    s_cos[threadIdx.x] = cos[rope_idx];
-    s_sin[threadIdx.x] = sin[rope_idx];
-    __syncthreads();
-
-    float c = s_cos[threadIdx.x];
-    float s = s_sin[threadIdx.x];
-
-    float2 vec = x[idx];
-    x[idx] = rope_rotate_f32(vec, c, s);
 }
 
 /**
- * @brief F16 Interleaved kernel for single tensor
+ * @brief F16 Interleaved kernel with position selection
  */
-__global__ void rope_i_f16_kernel(
-    __half2* __restrict__ x,
+__global__ void __launch_bounds__(BLOCK_SIZE)
+fused_rope_i_f16_kernel(
+    __half2* __restrict__ q,
+    __half2* __restrict__ k,
     const __half* __restrict__ cos,
     const __half* __restrict__ sin,
-    const uint32_t num_pairs,
-    const uint32_t half_td,
-    const uint32_t stride_b
+    const int64_t* __restrict__ positions,
+    const uint32_t q_num_pairs,
+    const uint32_t k_num_pairs,
+    const uint32_t seq_len,
+    const uint32_t half_d
 ) {
-    __shared__ __half s_cos[BLOCK_SIZE];
-    __shared__ __half s_sin[BLOCK_SIZE];
-
-    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_pairs) return;
-
-    uint32_t rope_idx = idx % half_td;
-    if (stride_b > 0) {
-        uint32_t b_idx = (2 * idx) / stride_b;
-        rope_idx += b_idx * half_td;
+    const uint32_t total_pairs = q_num_pairs + k_num_pairs;
+    
+    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < total_pairs; 
+         idx += gridDim.x * blockDim.x) {
+        
+        const bool is_q = (idx < q_num_pairs);
+        const uint32_t local_idx = is_q ? idx : (idx - q_num_pairs);
+        
+        const uint32_t d_idx = local_idx % half_d;
+        const uint32_t t_idx = (local_idx / half_d) % seq_len;
+        
+        const int64_t pos = positions[t_idx];
+        const uint32_t cs_idx = pos * half_d + d_idx;
+        
+        // F32 compute for precision
+        const float c = __half2float(cos[cs_idx]);
+        const float s = __half2float(sin[cs_idx]);
+        
+        __half2* ptr = is_q ? q : k;
+        __half2 v = ptr[local_idx];
+        
+        float vx = __half2float(v.x);
+        float vy = __half2float(v.y);
+        
+        __half2 result;
+        result.x = __float2half(vx * c - vy * s);
+        result.y = __float2half(vx * s + vy * c);
+        
+        ptr[local_idx] = result;
     }
-
-    s_cos[threadIdx.x] = cos[rope_idx];
-    s_sin[threadIdx.x] = sin[rope_idx];
-    __syncthreads();
-
-    __half c = s_cos[threadIdx.x];
-    __half s = s_sin[threadIdx.x];
-
-    __half2 vec = x[idx];
-    x[idx] = rope_rotate_f16(vec, c, s);
 }
 
 #ifndef NO_BF16_KERNEL
 /**
- * @brief BF16 Interleaved kernel for single tensor
+ * @brief BF16 Interleaved kernel with position selection
  */
-__global__ void rope_i_bf16_kernel(
-    __nv_bfloat162* __restrict__ x,
+__global__ void __launch_bounds__(BLOCK_SIZE)
+fused_rope_i_bf16_kernel(
+    __nv_bfloat162* __restrict__ q,
+    __nv_bfloat162* __restrict__ k,
     const __nv_bfloat16* __restrict__ cos,
     const __nv_bfloat16* __restrict__ sin,
-    const uint32_t num_pairs,
-    const uint32_t half_td,
-    const uint32_t stride_b
+    const int64_t* __restrict__ positions,
+    const uint32_t q_num_pairs,
+    const uint32_t k_num_pairs,
+    const uint32_t seq_len,
+    const uint32_t half_d
 ) {
-    __shared__ __nv_bfloat16 s_cos[BLOCK_SIZE];
-    __shared__ __nv_bfloat16 s_sin[BLOCK_SIZE];
-
-    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= num_pairs) return;
-
-    uint32_t rope_idx = idx % half_td;
-    if (stride_b > 0) {
-        uint32_t b_idx = (2 * idx) / stride_b;
-        rope_idx += b_idx * half_td;
+    const uint32_t total_pairs = q_num_pairs + k_num_pairs;
+    
+    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < total_pairs; 
+         idx += gridDim.x * blockDim.x) {
+        
+        const bool is_q = (idx < q_num_pairs);
+        const uint32_t local_idx = is_q ? idx : (idx - q_num_pairs);
+        
+        const uint32_t d_idx = local_idx % half_d;
+        const uint32_t t_idx = (local_idx / half_d) % seq_len;
+        
+        const int64_t pos = positions[t_idx];
+        const uint32_t cs_idx = pos * half_d + d_idx;
+        
+        // Native BF16 compute
+        const __nv_bfloat16 c = cos[cs_idx];
+        const __nv_bfloat16 s = sin[cs_idx];
+        
+        __nv_bfloat162* ptr = is_q ? q : k;
+        __nv_bfloat162 v = ptr[local_idx];
+        
+        __nv_bfloat162 result;
+        result.x = __hsub(__hmul(v.x, c), __hmul(v.y, s));
+        result.y = __hadd(__hmul(v.x, s), __hmul(v.y, c));
+        
+        ptr[local_idx] = result;
     }
-
-    s_cos[threadIdx.x] = cos[rope_idx];
-    s_sin[threadIdx.x] = sin[rope_idx];
-    __syncthreads();
-
-    __nv_bfloat16 c = s_cos[threadIdx.x];
-    __nv_bfloat16 s = s_sin[threadIdx.x];
-
-    __nv_bfloat162 vec = x[idx];
-    x[idx] = rope_rotate_bf16(vec, c, s);
 }
 #endif
 
 // ============================================================================
-// Non-Interleaved Single-tensor Kernels
+// Non-Interleaved RoPE with Position Selection
 // ============================================================================
 
 /**
- * @brief F32 Non-interleaved kernel for single tensor
+ * @brief F32 Non-interleaved kernel with position selection
  */
-__global__ void rope_f32_kernel(
-    float* __restrict__ x,
+__global__ void __launch_bounds__(BLOCK_SIZE)
+fused_rope_f32_kernel(
+    float* __restrict__ q,
+    float* __restrict__ k,
     const float* __restrict__ cos,
     const float* __restrict__ sin,
-    const uint32_t bh,
-    const uint32_t td,
-    const uint32_t d,
-    const uint32_t stride_b
+    const int64_t* __restrict__ positions,
+    const uint32_t q_bh,  // batch * num_q_heads
+    const uint32_t k_bh,  // batch * num_kv_heads
+    const uint32_t seq_len,
+    const uint32_t d  // head_dim
 ) {
-    __shared__ float s_cos[BLOCK_SIZE];
-    __shared__ float s_sin[BLOCK_SIZE];
-
-    const uint32_t total_pairs = (bh * td) / 2;
     const uint32_t half_d = d / 2;
-    const uint32_t half_td = td / 2;
+    const uint32_t q_pairs = q_bh * seq_len * half_d;
+    const uint32_t k_pairs = k_bh * seq_len * half_d;
+    const uint32_t total_pairs = q_pairs + k_pairs;
     
-    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total_pairs) return;
-
-    uint32_t i_bh = idx / half_td;
-    uint32_t i_td = idx - half_td * i_bh;
-    uint32_t i_t = i_td / half_d;
-    uint32_t i_d = i_td - half_d * i_t;
-    
-    uint32_t i1 = i_bh * td + i_t * d + i_d;
-    uint32_t i2 = i1 + half_d;
-    
-    uint32_t i_cs = i_t * half_d + i_d;
-    if (stride_b > 0) {
-        uint32_t b_idx = (2 * idx) / stride_b;
-        i_cs += b_idx * half_td;
+    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < total_pairs; 
+         idx += gridDim.x * blockDim.x) {
+        
+        const bool is_q = (idx < q_pairs);
+        const uint32_t local_idx = is_q ? idx : (idx - q_pairs);
+        const uint32_t bh = is_q ? q_bh : k_bh;
+        
+        // Decompose index: local_idx = i_bh * (seq_len * half_d) + i_t * half_d + i_d
+        const uint32_t pairs_per_bh = seq_len * half_d;
+        const uint32_t i_bh = local_idx / pairs_per_bh;
+        const uint32_t remainder = local_idx % pairs_per_bh;
+        const uint32_t i_t = remainder / half_d;
+        const uint32_t i_d = remainder % half_d;
+        
+        // Get position for this sequence index
+        const int64_t pos = positions[i_t];
+        
+        // cos/sin index: [pos, i_d]
+        const uint32_t cs_idx = pos * half_d + i_d;
+        const float c = cos[cs_idx];
+        const float s = sin[cs_idx];
+        
+        // Calculate tensor indices (non-interleaved: pairs at d/2 offset)
+        const uint32_t td = seq_len * d;
+        const uint32_t i1 = i_bh * td + i_t * d + i_d;
+        const uint32_t i2 = i1 + half_d;
+        
+        float* ptr = is_q ? q : k;
+        float x1 = ptr[i1];
+        float x2 = ptr[i2];
+        
+        ptr[i1] = x1 * c - x2 * s;
+        ptr[i2] = x1 * s + x2 * c;
     }
-
-    s_cos[threadIdx.x] = cos[i_cs];
-    s_sin[threadIdx.x] = sin[i_cs];
-    __syncthreads();
-
-    float c = s_cos[threadIdx.x];
-    float s = s_sin[threadIdx.x];
-
-    float x1 = x[i1];
-    float x2 = x[i2];
-    x[i1] = x1 * c - x2 * s;
-    x[i2] = x1 * s + x2 * c;
 }
 
 /**
- * @brief F16 Non-interleaved kernel for single tensor
+ * @brief F16 Non-interleaved kernel with position selection
  */
-__global__ void rope_f16_kernel(
-    __half* __restrict__ x,
+__global__ void __launch_bounds__(BLOCK_SIZE)
+fused_rope_f16_kernel(
+    __half* __restrict__ q,
+    __half* __restrict__ k,
     const __half* __restrict__ cos,
     const __half* __restrict__ sin,
-    const uint32_t bh,
-    const uint32_t td,
-    const uint32_t d,
-    const uint32_t stride_b
+    const int64_t* __restrict__ positions,
+    const uint32_t q_bh,
+    const uint32_t k_bh,
+    const uint32_t seq_len,
+    const uint32_t d
 ) {
-    __shared__ float s_cos[BLOCK_SIZE];
-    __shared__ float s_sin[BLOCK_SIZE];
-
-    const uint32_t total_pairs = (bh * td) / 2;
     const uint32_t half_d = d / 2;
-    const uint32_t half_td = td / 2;
+    const uint32_t q_pairs = q_bh * seq_len * half_d;
+    const uint32_t k_pairs = k_bh * seq_len * half_d;
+    const uint32_t total_pairs = q_pairs + k_pairs;
     
-    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total_pairs) return;
-
-    uint32_t i_bh = idx / half_td;
-    uint32_t i_td = idx - half_td * i_bh;
-    uint32_t i_t = i_td / half_d;
-    uint32_t i_d = i_td - half_d * i_t;
-    
-    uint32_t i1 = i_bh * td + i_t * d + i_d;
-    uint32_t i2 = i1 + half_d;
-    
-    uint32_t i_cs = i_t * half_d + i_d;
-    if (stride_b > 0) {
-        uint32_t b_idx = (2 * idx) / stride_b;
-        i_cs += b_idx * half_td;
+    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < total_pairs; 
+         idx += gridDim.x * blockDim.x) {
+        
+        const bool is_q = (idx < q_pairs);
+        const uint32_t local_idx = is_q ? idx : (idx - q_pairs);
+        
+        const uint32_t pairs_per_bh = seq_len * half_d;
+        const uint32_t i_bh = local_idx / pairs_per_bh;
+        const uint32_t remainder = local_idx % pairs_per_bh;
+        const uint32_t i_t = remainder / half_d;
+        const uint32_t i_d = remainder % half_d;
+        
+        const int64_t pos = positions[i_t];
+        const uint32_t cs_idx = pos * half_d + i_d;
+        
+        // F32 compute
+        const float c = __half2float(cos[cs_idx]);
+        const float s = __half2float(sin[cs_idx]);
+        
+        const uint32_t td = seq_len * d;
+        const uint32_t i1 = i_bh * td + i_t * d + i_d;
+        const uint32_t i2 = i1 + half_d;
+        
+        __half* ptr = is_q ? q : k;
+        float x1 = __half2float(ptr[i1]);
+        float x2 = __half2float(ptr[i2]);
+        
+        ptr[i1] = __float2half(x1 * c - x2 * s);
+        ptr[i2] = __float2half(x1 * s + x2 * c);
     }
-
-    s_cos[threadIdx.x] = __half2float(cos[i_cs]);
-    s_sin[threadIdx.x] = __half2float(sin[i_cs]);
-    __syncthreads();
-
-    float c = s_cos[threadIdx.x];
-    float s = s_sin[threadIdx.x];
-
-    float x1 = __half2float(x[i1]);
-    float x2 = __half2float(x[i2]);
-    x[i1] = __float2half(x1 * c - x2 * s);
-    x[i2] = __float2half(x1 * s + x2 * c);
 }
 
 #ifndef NO_BF16_KERNEL
 /**
- * @brief BF16 Non-interleaved kernel for single tensor
+ * @brief BF16 Non-interleaved kernel with position selection
  */
-__global__ void rope_bf16_kernel(
-    __nv_bfloat16* __restrict__ x,
+__global__ void __launch_bounds__(BLOCK_SIZE)
+fused_rope_bf16_kernel(
+    __nv_bfloat16* __restrict__ q,
+    __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ cos,
     const __nv_bfloat16* __restrict__ sin,
-    const uint32_t bh,
-    const uint32_t td,
-    const uint32_t d,
-    const uint32_t stride_b
+    const int64_t* __restrict__ positions,
+    const uint32_t q_bh,
+    const uint32_t k_bh,
+    const uint32_t seq_len,
+    const uint32_t d
 ) {
-    __shared__ __nv_bfloat16 s_cos[BLOCK_SIZE];
-    __shared__ __nv_bfloat16 s_sin[BLOCK_SIZE];
-
-    const uint32_t total_pairs = (bh * td) / 2;
     const uint32_t half_d = d / 2;
-    const uint32_t half_td = td / 2;
+    const uint32_t q_pairs = q_bh * seq_len * half_d;
+    const uint32_t k_pairs = k_bh * seq_len * half_d;
+    const uint32_t total_pairs = q_pairs + k_pairs;
     
-    const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total_pairs) return;
-
-    uint32_t i_bh = idx / half_td;
-    uint32_t i_td = idx - half_td * i_bh;
-    uint32_t i_t = i_td / half_d;
-    uint32_t i_d = i_td - half_d * i_t;
-    
-    uint32_t i1 = i_bh * td + i_t * d + i_d;
-    uint32_t i2 = i1 + half_d;
-    
-    uint32_t i_cs = i_t * half_d + i_d;
-    if (stride_b > 0) {
-        uint32_t b_idx = (2 * idx) / stride_b;
-        i_cs += b_idx * half_td;
+    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < total_pairs; 
+         idx += gridDim.x * blockDim.x) {
+        
+        const bool is_q = (idx < q_pairs);
+        const uint32_t local_idx = is_q ? idx : (idx - q_pairs);
+        
+        const uint32_t pairs_per_bh = seq_len * half_d;
+        const uint32_t i_bh = local_idx / pairs_per_bh;
+        const uint32_t remainder = local_idx % pairs_per_bh;
+        const uint32_t i_t = remainder / half_d;
+        const uint32_t i_d = remainder % half_d;
+        
+        const int64_t pos = positions[i_t];
+        const uint32_t cs_idx = pos * half_d + i_d;
+        
+        const __nv_bfloat16 c = cos[cs_idx];
+        const __nv_bfloat16 s = sin[cs_idx];
+        
+        const uint32_t td = seq_len * d;
+        const uint32_t i1 = i_bh * td + i_t * d + i_d;
+        const uint32_t i2 = i1 + half_d;
+        
+        __nv_bfloat16* ptr = is_q ? q : k;
+        __nv_bfloat16 x1 = ptr[i1];
+        __nv_bfloat16 x2 = ptr[i2];
+        
+        ptr[i1] = __hsub(__hmul(x1, c), __hmul(x2, s));
+        ptr[i2] = __hadd(__hmul(x1, s), __hmul(x2, c));
     }
-
-    s_cos[threadIdx.x] = cos[i_cs];
-    s_sin[threadIdx.x] = sin[i_cs];
-    __syncthreads();
-
-    __nv_bfloat16 c = s_cos[threadIdx.x];
-    __nv_bfloat16 s = s_sin[threadIdx.x];
-
-    __nv_bfloat16 x1 = x[i1];
-    __nv_bfloat16 x2 = x[i2];
-    x[i1] = __hsub(__hmul(x1, c), __hmul(x2, s));
-    x[i2] = __hadd(__hmul(x1, s), __hmul(x2, c));
 }
 #endif
 
 // ============================================================================
-// Launch configuration helper
+// Launch helpers
 // ============================================================================
 
-inline dim3 get_launch_config(uint32_t num_elements) {
+inline dim3 get_optimal_grid(uint32_t num_elements) {
+    const int max_blocks = 1024;
     int num_blocks = (num_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    return dim3(num_blocks, 1, 1);
+    return dim3(min(num_blocks, max_blocks), 1, 1);
 }
 
 // ============================================================================
-// C-linkage wrapper functions for FFI (now process Q and K separately)
+// C-linkage wrappers - NEW API with positions
 // ============================================================================
 
-// Non-interleaved versions - process Q and K with separate bh values
 extern "C" void fused_rope_f32(
     float* q, float* k,
     const float* cos, const float* sin,
-    uint32_t q_bh, uint32_t k_bh,  // Separate batch*heads for Q and K
-    uint32_t td, uint32_t d, uint32_t stride_b,
+    const int64_t* positions,  // NEW: position indices [seq_len]
+    uint32_t q_bh, uint32_t k_bh,
+    uint32_t seq_len, uint32_t d,  // Changed: seq_len instead of td
     int64_t stream_ptr
 ) {
     cudaStream_t stream = (cudaStream_t)stream_ptr;
-    
-    // Process Q
-    uint32_t q_num_pairs = (q_bh * td) / 2;
-    dim3 q_grid = get_launch_config(q_num_pairs);
-    rope_f32_kernel<<<q_grid, BLOCK_SIZE, 0, stream>>>(q, cos, sin, q_bh, td, d, stride_b);
-    
-    // Process K
-    uint32_t k_num_pairs = (k_bh * td) / 2;
-    dim3 k_grid = get_launch_config(k_num_pairs);
-    rope_f32_kernel<<<k_grid, BLOCK_SIZE, 0, stream>>>(k, cos, sin, k_bh, td, d, stride_b);
+    uint32_t half_d = d / 2;
+    uint32_t total = (q_bh + k_bh) * seq_len * half_d;
+    dim3 grid = get_optimal_grid(total);
+    fused_rope_f32_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
+        q, k, cos, sin, positions, q_bh, k_bh, seq_len, d
+    );
 }
 
 extern "C" void fused_rope_f16(
     void* q, void* k,
     const void* cos, const void* sin,
+    const int64_t* positions,
     uint32_t q_bh, uint32_t k_bh,
-    uint32_t td, uint32_t d, uint32_t stride_b,
+    uint32_t seq_len, uint32_t d,
     int64_t stream_ptr
 ) {
     cudaStream_t stream = (cudaStream_t)stream_ptr;
-    
-    uint32_t q_num_pairs = (q_bh * td) / 2;
-    dim3 q_grid = get_launch_config(q_num_pairs);
-    rope_f16_kernel<<<q_grid, BLOCK_SIZE, 0, stream>>>(
-        (__half*)q, (const __half*)cos, (const __half*)sin, q_bh, td, d, stride_b
-    );
-    
-    uint32_t k_num_pairs = (k_bh * td) / 2;
-    dim3 k_grid = get_launch_config(k_num_pairs);
-    rope_f16_kernel<<<k_grid, BLOCK_SIZE, 0, stream>>>(
-        (__half*)k, (const __half*)cos, (const __half*)sin, k_bh, td, d, stride_b
+    uint32_t half_d = d / 2;
+    uint32_t total = (q_bh + k_bh) * seq_len * half_d;
+    dim3 grid = get_optimal_grid(total);
+    fused_rope_f16_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
+        (__half*)q, (__half*)k, (const __half*)cos, (const __half*)sin,
+        positions, q_bh, k_bh, seq_len, d
     );
 }
 
@@ -382,76 +405,58 @@ extern "C" void fused_rope_f16(
 extern "C" void fused_rope_bf16(
     void* q, void* k,
     const void* cos, const void* sin,
+    const int64_t* positions,
     uint32_t q_bh, uint32_t k_bh,
-    uint32_t td, uint32_t d, uint32_t stride_b,
+    uint32_t seq_len, uint32_t d,
     int64_t stream_ptr
 ) {
     cudaStream_t stream = (cudaStream_t)stream_ptr;
-    
-    uint32_t q_num_pairs = (q_bh * td) / 2;
-    dim3 q_grid = get_launch_config(q_num_pairs);
-    rope_bf16_kernel<<<q_grid, BLOCK_SIZE, 0, stream>>>(
-        (__nv_bfloat16*)q, (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin, 
-        q_bh, td, d, stride_b
-    );
-    
-    uint32_t k_num_pairs = (k_bh * td) / 2;
-    dim3 k_grid = get_launch_config(k_num_pairs);
-    rope_bf16_kernel<<<k_grid, BLOCK_SIZE, 0, stream>>>(
-        (__nv_bfloat16*)k, (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin, 
-        k_bh, td, d, stride_b
+    uint32_t half_d = d / 2;
+    uint32_t total = (q_bh + k_bh) * seq_len * half_d;
+    dim3 grid = get_optimal_grid(total);
+    fused_rope_bf16_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
+        (__nv_bfloat16*)q, (__nv_bfloat16*)k,
+        (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin,
+        positions, q_bh, k_bh, seq_len, d
     );
 }
 #endif
 
-// Interleaved versions - process Q and K with separate bh values
 extern "C" void fused_rope_i_f32(
     float* q, float* k,
     const float* cos, const float* sin,
+    const int64_t* positions,
     uint32_t q_bh, uint32_t k_bh,
-    uint32_t td, uint32_t stride_b,
+    uint32_t seq_len, uint32_t d,
     int64_t stream_ptr
 ) {
     cudaStream_t stream = (cudaStream_t)stream_ptr;
-    uint32_t half_td = td / 2;
-    
-    // Process Q
-    uint32_t q_num_pairs = (q_bh * td) / 2;
-    dim3 q_grid = get_launch_config(q_num_pairs);
-    rope_i_f32_kernel<<<q_grid, BLOCK_SIZE, 0, stream>>>(
-        (float2*)q, cos, sin, q_num_pairs, half_td, stride_b
-    );
-    
-    // Process K
-    uint32_t k_num_pairs = (k_bh * td) / 2;
-    dim3 k_grid = get_launch_config(k_num_pairs);
-    rope_i_f32_kernel<<<k_grid, BLOCK_SIZE, 0, stream>>>(
-        (float2*)k, cos, sin, k_num_pairs, half_td, stride_b
+    uint32_t half_d = d / 2;
+    uint32_t q_pairs = q_bh * seq_len * half_d;
+    uint32_t k_pairs = k_bh * seq_len * half_d;
+    dim3 grid = get_optimal_grid(q_pairs + k_pairs);
+    fused_rope_i_f32_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
+        (float2*)q, (float2*)k, cos, sin, positions,
+        q_pairs, k_pairs, seq_len, half_d
     );
 }
 
 extern "C" void fused_rope_i_f16(
     void* q, void* k,
     const void* cos, const void* sin,
+    const int64_t* positions,
     uint32_t q_bh, uint32_t k_bh,
-    uint32_t td, uint32_t stride_b,
+    uint32_t seq_len, uint32_t d,
     int64_t stream_ptr
 ) {
     cudaStream_t stream = (cudaStream_t)stream_ptr;
-    uint32_t half_td = td / 2;
-    
-    uint32_t q_num_pairs = (q_bh * td) / 2;
-    dim3 q_grid = get_launch_config(q_num_pairs);
-    rope_i_f16_kernel<<<q_grid, BLOCK_SIZE, 0, stream>>>(
-        (__half2*)q, (const __half*)cos, (const __half*)sin, 
-        q_num_pairs, half_td, stride_b
-    );
-    
-    uint32_t k_num_pairs = (k_bh * td) / 2;
-    dim3 k_grid = get_launch_config(k_num_pairs);
-    rope_i_f16_kernel<<<k_grid, BLOCK_SIZE, 0, stream>>>(
-        (__half2*)k, (const __half*)cos, (const __half*)sin, 
-        k_num_pairs, half_td, stride_b
+    uint32_t half_d = d / 2;
+    uint32_t q_pairs = q_bh * seq_len * half_d;
+    uint32_t k_pairs = k_bh * seq_len * half_d;
+    dim3 grid = get_optimal_grid(q_pairs + k_pairs);
+    fused_rope_i_f16_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
+        (__half2*)q, (__half2*)k, (const __half*)cos, (const __half*)sin,
+        positions, q_pairs, k_pairs, seq_len, half_d
     );
 }
 
@@ -459,25 +464,20 @@ extern "C" void fused_rope_i_f16(
 extern "C" void fused_rope_i_bf16(
     void* q, void* k,
     const void* cos, const void* sin,
+    const int64_t* positions,
     uint32_t q_bh, uint32_t k_bh,
-    uint32_t td, uint32_t stride_b,
+    uint32_t seq_len, uint32_t d,
     int64_t stream_ptr
 ) {
     cudaStream_t stream = (cudaStream_t)stream_ptr;
-    uint32_t half_td = td / 2;
-    
-    uint32_t q_num_pairs = (q_bh * td) / 2;
-    dim3 q_grid = get_launch_config(q_num_pairs);
-    rope_i_bf16_kernel<<<q_grid, BLOCK_SIZE, 0, stream>>>(
-        (__nv_bfloat162*)q, (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin, 
-        q_num_pairs, half_td, stride_b
-    );
-    
-    uint32_t k_num_pairs = (k_bh * td) / 2;
-    dim3 k_grid = get_launch_config(k_num_pairs);
-    rope_i_bf16_kernel<<<k_grid, BLOCK_SIZE, 0, stream>>>(
-        (__nv_bfloat162*)k, (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin, 
-        k_num_pairs, half_td, stride_b
+    uint32_t half_d = d / 2;
+    uint32_t q_pairs = q_bh * seq_len * half_d;
+    uint32_t k_pairs = k_bh * seq_len * half_d;
+    dim3 grid = get_optimal_grid(q_pairs + k_pairs);
+    fused_rope_i_bf16_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
+        (__nv_bfloat162*)q, (__nv_bfloat162*)k,
+        (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin,
+        positions, q_pairs, k_pairs, seq_len, half_d
     );
 }
 #endif
