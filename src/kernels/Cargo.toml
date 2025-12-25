@@ -1,6 +1,6 @@
 [package]
 name = "kernels"
-version = "0.1.6"
+version = "0.1.9"
 edition = "2021"
 description = "Paged attention kernels for Rust"
 categories = ["science"]
