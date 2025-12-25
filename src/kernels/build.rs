@@ -13,6 +13,7 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/moe_gemm.cu");
     println!("cargo:rerun-if-changed=src/moe_gemm_wmma.cu");
     println!("cargo:rerun-if-changed=src/moe_gemm_gguf.cu");
+    println!("cargo:rerun-if-changed=src/moe_gguf_small_m.cu");
     println!("cargo:rerun-if-changed=src/moe_wmma_gguf.cu");
     println!("cargo:rerun-if-changed=src/gpu_sampling.cuh");
     println!("cargo:rerun-if-changed=src/gpu_sampling.cu");
