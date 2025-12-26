@@ -401,7 +401,6 @@ extern "C" void fused_rope_f16(
     );
 }
 
-#ifndef NO_BF16_KERNEL
 extern "C" void fused_rope_bf16(
     void* q, void* k,
     const void* cos, const void* sin,
@@ -414,13 +413,14 @@ extern "C" void fused_rope_bf16(
     uint32_t half_d = d / 2;
     uint32_t total = (q_bh + k_bh) * seq_len * half_d;
     dim3 grid = get_optimal_grid(total);
+#ifndef NO_BF16_KERNEL
     fused_rope_bf16_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
         (__nv_bfloat16*)q, (__nv_bfloat16*)k,
         (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin,
         positions, q_bh, k_bh, seq_len, d
     );
-}
 #endif
+}
 
 extern "C" void fused_rope_i_f32(
     float* q, float* k,
@@ -460,7 +460,6 @@ extern "C" void fused_rope_i_f16(
     );
 }
 
-#ifndef NO_BF16_KERNEL
 extern "C" void fused_rope_i_bf16(
     void* q, void* k,
     const void* cos, const void* sin,
@@ -473,11 +472,12 @@ extern "C" void fused_rope_i_bf16(
     uint32_t half_d = d / 2;
     uint32_t q_pairs = q_bh * seq_len * half_d;
     uint32_t k_pairs = k_bh * seq_len * half_d;
+#ifndef NO_BF16_KERNEL
     dim3 grid = get_optimal_grid(q_pairs + k_pairs);
     fused_rope_i_bf16_kernel<<<grid, BLOCK_SIZE, 0, stream>>>(
         (__nv_bfloat162*)q, (__nv_bfloat162*)k,
         (const __nv_bfloat16*)cos, (const __nv_bfloat16*)sin,
         positions, q_pairs, k_pairs, seq_len, half_d
     );
-}
 #endif
+}
