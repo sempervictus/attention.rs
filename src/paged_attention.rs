@@ -228,36 +228,79 @@ impl PagedAttention {
             };
 
             unsafe {
-                kernels::ffi::paged_attention_prefill(
-                    out_ptr,
-                    q_ptr,
-                    kc_ptr,
-                    vc_ptr,
-                    k_scales_ptr,
-                    v_scales_ptr,
-                    num_kv_heads as c_int,
-                    self.softmax_scale,
-                    bt_ptr,
-                    cl_ptr,
-                    block_size as c_int,
-                    self.max_context_len as c_int,
-                    num_seqs_bt as c_int,
-                    num_heads as c_int,
-                    self.num_query_tokens as c_int,
-                    head_size as c_int,
-                    max_num_blocks_per_seq as c_int,
-                    q_stride as c_int,
-                    num_blocks as c_int,
-                    kv_block_stride as c_int,
-                    kv_head_stride as c_int,
-                    internal_type,
-                    self.softcapping,
-                    o_stride_tokens as c_int,
-                    query_start_len_ptr as *const u32,
-                    sinks_ptr as *const f32,
-                    self.sliding_window as c_int,
-                    *dev.cu_stream() as i64,
-                )
+                // Calculate shared memory requirement for optimized kernel:
+                // smem_size = 32 (SeqInfo) + 2 * head_size * block_size * sizeof(cache_t)
+                // sizeof(cache_t) = 2 for fp16/bf16, 1 for fp8
+                let cache_elem_size = if k_scales_ptr.is_null() { 2usize } else { 1usize };
+                let smem_size = 32 + 2 * head_size * block_size * cache_elem_size;
+
+                // Use optimized kernel with shared memory tiling when:
+                // 1. KV cache is large (num_blocks > 64, i.e., >4096 tokens with block_size=64)
+                // 2. Single sequence (optimized kernel assumes all tokens in chunk share same KV blocks)
+                // 3. Shared memory fits within 64KB (minimum on modern GPUs, extended via cudaFuncSetAttribute)
+                if num_seqs > 1024 && num_seqs_bt == 1 && smem_size <= 64 * 1024 {
+                    kernels::ffi::paged_attention_prefill_opt(
+                        out_ptr,
+                        q_ptr,
+                        kc_ptr,
+                        vc_ptr,
+                        k_scales_ptr,
+                        v_scales_ptr,
+                        num_kv_heads as c_int,
+                        self.softmax_scale,
+                        bt_ptr,
+                        cl_ptr,
+                        block_size as c_int,
+                        self.max_context_len as c_int,
+                        num_seqs_bt as c_int,
+                        num_heads as c_int,
+                        self.num_query_tokens as c_int,
+                        head_size as c_int,
+                        max_num_blocks_per_seq as c_int,
+                        q_stride as c_int,
+                        num_blocks as c_int,
+                        kv_block_stride as c_int,
+                        kv_head_stride as c_int,
+                        internal_type,
+                        self.softcapping,
+                        o_stride_tokens as c_int,
+                        query_start_len_ptr as *const u32,
+                        sinks_ptr as *const f32,
+                        self.sliding_window as c_int,
+                        *dev.cu_stream() as i64,
+                    )
+                } else {
+                    kernels::ffi::paged_attention_prefill(
+                        out_ptr,
+                        q_ptr,
+                        kc_ptr,
+                        vc_ptr,
+                        k_scales_ptr,
+                        v_scales_ptr,
+                        num_kv_heads as c_int,
+                        self.softmax_scale,
+                        bt_ptr,
+                        cl_ptr,
+                        block_size as c_int,
+                        self.max_context_len as c_int,
+                        num_seqs_bt as c_int,
+                        num_heads as c_int,
+                        self.num_query_tokens as c_int,
+                        head_size as c_int,
+                        max_num_blocks_per_seq as c_int,
+                        q_stride as c_int,
+                        num_blocks as c_int,
+                        kv_block_stride as c_int,
+                        kv_head_stride as c_int,
+                        internal_type,
+                        self.softcapping,
+                        o_stride_tokens as c_int,
+                        query_start_len_ptr as *const u32,
+                        sinks_ptr as *const f32,
+                        self.sliding_window as c_int,
+                        *dev.cu_stream() as i64,
+                    )
+                }
             }
         } else if use_v1 {
             unsafe {
