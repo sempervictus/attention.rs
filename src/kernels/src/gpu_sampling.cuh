@@ -15,11 +15,12 @@ struct SamplerParams {
   int V;            // vocab size
   float temperature; // 0 => greedy-like behavior (handled as large invT)
   float top_p;      // <=0 or >=1 => disabled; else top-p within top-k
+  int top_k;        // requested top-k (<=0 means no top-k cap)
   uint64_t seed;    // base seed
   uint64_t token_pos; // monotonically increasing per generated token (for determinism)
 };
 
-// Runtime entrypoint (supports K=32 or 64 or 128 via template instantiation)
+// Runtime entrypoint (supports K=32, 64, 128, or 256 via template instantiation)
 template<int K>
 void gpu_topk_topp_sample(
     const float* logits_d,   // [B,V] row-major

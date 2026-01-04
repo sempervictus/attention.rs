@@ -13,7 +13,7 @@
  *
  * @details
  * - Two-stage algorithm: local top-k per tile, then global merge and sample.
- * - Supports top-k values of 32, 64, or 128 via template instantiation.
+ * - Supports top-k values of 32, 64, 128, or 256 via template instantiation.
  * - Uses CUB block radix sort for efficient in-block sorting.
  * - Temperature scaling and top-p (nucleus) sampling within top-k.
  * - Philox4x32-10 PRNG for reproducible sampling with (seed, token_pos) keys.
@@ -171,6 +171,7 @@ __global__ void stageB_reduce_and_sample(
     const float* __restrict__ tile_vals, // [B, tiles, K] sorted desc per tile
     const int* __restrict__ tile_idx,    // [B, tiles, K]
     float top_p,
+    int top_k,
     uint64_t seed,
     uint64_t token_pos,
     int* __restrict__ out_tokens         // [B]
@@ -192,7 +193,7 @@ __global__ void stageB_reduce_and_sample(
   __syncthreads();
 
   // Sequentially merge each tile's topK into running topK.
-  // K is small (32/64/128), tiles_per_row is modest; this is fast in practice.
+  // K is small (32/64/128/256), tiles_per_row is modest; this is fast in practice.
   for (int tile = 0; tile < tiles_per_row; ++tile) {
     const int base = (b * tiles_per_row + tile) * K;
 
@@ -213,29 +214,40 @@ __global__ void stageB_reduce_and_sample(
     __syncthreads();
   }
 
+  int k_eff = top_k > 0 ? (top_k < K ? top_k : K) : K;
+  if (k_eff < 1) k_eff = 1;
+
   // Softmax over topK (stable). Use one thread (K is small) for robustness.
   __shared__ float probs[K];
   if (tid == 0) {
     float mx = topv[0];
     #pragma unroll
-    for (int t = 1; t < K; ++t) mx = fmaxf(mx, topv[t]);
+    for (int t = 1; t < K; ++t) {
+      if (t < k_eff) {
+        mx = fmaxf(mx, topv[t]);
+      }
+    }
 
     float sum = 0.0f;
     #pragma unroll
     for (int t = 0; t < K; ++t) {
-      float e = __expf(topv[t] - mx);
-      probs[t] = e;
-      sum += e;
+      if (t < k_eff) {
+        float e = __expf(topv[t] - mx);
+        probs[t] = e;
+        sum += e;
+      } else {
+        probs[t] = 0.0f;
+      }
     }
     sum = fmaxf(sum, 1e-20f);
     #pragma unroll
     for (int t = 0; t < K; ++t) probs[t] /= sum;
 
     // top-p within top-k
-    int cutoff = K;
+    int cutoff = k_eff;
     if (top_p > 0.0f && top_p < 1.0f) {
       float cum = 0.0f;
-      for (int t = 0; t < K; ++t) {
+      for (int t = 0; t < k_eff; ++t) {
         cum += probs[t];
         if (cum >= top_p) { cutoff = t + 1; break; }
       }
@@ -304,7 +316,7 @@ void gpu_topk_topp_sample(
   dim3 blockB(256, 1, 1);
   stageB_reduce_and_sample<K, 256>
       <<<gridB, blockB, 0, stream>>>(
-          p.B, tiles, tile_vals_d, tile_idx_d, p.top_p, p.seed, p.token_pos, out_tokens_d);
+          p.B, tiles, tile_vals_d, tile_idx_d, p.top_p, p.top_k, p.seed, p.token_pos, out_tokens_d);
 
   CUDA_CHECK(cudaGetLastError());
 
@@ -316,17 +328,20 @@ void gpu_topk_topp_sample(
 template void gpu_topk_topp_sample<32, float>(const float*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<64, float>(const float*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<128, float>(const float*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<256, float>(const float*, int*, const SamplerParams&, cudaStream_t);
 
 // Explicit instantiations for __half (f16)
 template void gpu_topk_topp_sample<32, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<64, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<128, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<256, __half>(const __half*, int*, const SamplerParams&, cudaStream_t);
 
 // Explicit instantiations for __nv_bfloat16 (bf16) - requires sm_80+
 #ifndef NO_BF16_KERNEL
 template void gpu_topk_topp_sample<32, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<64, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
 template void gpu_topk_topp_sample<128, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
+template void gpu_topk_topp_sample<256, __nv_bfloat16>(const __nv_bfloat16*, int*, const SamplerParams&, cudaStream_t);
 #endif
 
 
@@ -347,17 +362,24 @@ extern "C" void sampling_f32(
     p.V = V;
     p.temperature = temperature;
     p.top_p = top_p;
+    int k_eff = K <= 0 ? V : K;
+    if (k_eff > V) k_eff = V;
+    if (k_eff < 1) k_eff = 1;
+    if (k_eff > 256) k_eff = 256;
+    p.top_k = k_eff;
     p.seed = seed;
     p.token_pos = token_pos;
 
     cudaStream_t stream = (cudaStream_t)stream_ptr;
 
-    if (K <= 32) {
+    if (k_eff <= 32) {
         gpu_topk_topp_sample<32, float>(logits_d, out_tokens_d, p, stream);
-    } else if (K <= 64) {
+    } else if (k_eff <= 64) {
         gpu_topk_topp_sample<64, float>(logits_d, out_tokens_d, p, stream);
-    } else {
+    } else if (k_eff <= 128) {
         gpu_topk_topp_sample<128, float>(logits_d, out_tokens_d, p, stream);
+    } else {
+        gpu_topk_topp_sample<256, float>(logits_d, out_tokens_d, p, stream);
     }
 }
 
@@ -378,18 +400,25 @@ extern "C" void sampling_f16(
     p.V = V;
     p.temperature = temperature;
     p.top_p = top_p;
+    int k_eff = K <= 0 ? V : K;
+    if (k_eff > V) k_eff = V;
+    if (k_eff < 1) k_eff = 1;
+    if (k_eff > 256) k_eff = 256;
+    p.top_k = k_eff;
     p.seed = seed;
     p.token_pos = token_pos;
 
     cudaStream_t stream = (cudaStream_t)stream_ptr;
     const __half* logits = reinterpret_cast<const __half*>(logits_d);
 
-    if (K <= 32) {
+    if (k_eff <= 32) {
         gpu_topk_topp_sample<32, __half>(logits, out_tokens_d, p, stream);
-    } else if (K <= 64) {
+    } else if (k_eff <= 64) {
         gpu_topk_topp_sample<64, __half>(logits, out_tokens_d, p, stream);
-    } else {
+    } else if (k_eff <= 128) {
         gpu_topk_topp_sample<128, __half>(logits, out_tokens_d, p, stream);
+    } else {
+        gpu_topk_topp_sample<256, __half>(logits, out_tokens_d, p, stream);
     }
 }
 
@@ -410,6 +439,11 @@ extern "C" void sampling_bf16(
     p.V = V;
     p.temperature = temperature;
     p.top_p = top_p;
+    int k_eff = K <= 0 ? V : K;
+    if (k_eff > V) k_eff = V;
+    if (k_eff < 1) k_eff = 1;
+    if (k_eff > 256) k_eff = 256;
+    p.top_k = k_eff;
     p.seed = seed;
     p.token_pos = token_pos;
 
@@ -417,12 +451,14 @@ extern "C" void sampling_bf16(
   #ifndef NO_BF16_KERNEL
     const __nv_bfloat16* logits = reinterpret_cast<const __nv_bfloat16*>(logits_d);
 
-    if (K <= 32) {
+    if (k_eff <= 32) {
         gpu_topk_topp_sample<32, __nv_bfloat16>(logits, out_tokens_d, p, stream);
-    } else if (K <= 64) {
+    } else if (k_eff <= 64) {
         gpu_topk_topp_sample<64, __nv_bfloat16>(logits, out_tokens_d, p, stream);
-    } else {
+    } else if (k_eff <= 128) {
         gpu_topk_topp_sample<128, __nv_bfloat16>(logits, out_tokens_d, p, stream);
+    } else {
+        gpu_topk_topp_sample<256, __nv_bfloat16>(logits, out_tokens_d, p, stream);
     }
   #endif
 }
