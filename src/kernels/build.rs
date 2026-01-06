@@ -12,6 +12,7 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/update_kvscales.cu");
     println!("cargo:rerun-if-changed=src/mask.cu");
     println!("cargo:rerun-if-changed=src/moe_gemm.cu");
+    println!("cargo:rerun-if-changed=src/moe_gemv.cu");
     println!("cargo:rerun-if-changed=src/moe_gemm_wmma.cu");
     println!("cargo:rerun-if-changed=src/moe_gemm_gguf.cu");
     println!("cargo:rerun-if-changed=src/moe_gguf_small_m.cu");
