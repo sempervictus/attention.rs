@@ -217,28 +217,34 @@ impl PagedAttention {
             let o_stride_tokens = q_l.stride()[0] as i32;
             let sinks_ptr = std::ptr::null();
 
-            let query_start_len_ptr = {
+            let (query_start_len_ptr, num_query_seqs) = {
                 let (cu_query_lens, cu_query_lens_layout) = cu_query_lens.storage_and_layout();
                 let cu_query_lens = match &*cu_query_lens {
                     candle::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
                     _ => candle::bail!("cu_query_lens must be a cuda tensor"),
                 };
                 let cu_query_lens = cu_query_lens.slice(cu_query_lens_layout.start_offset()..);
-                *cu_query_lens.device_ptr()
+                let num_query_seqs = cu_query_lens_layout.shape().dims1()?.saturating_sub(1);
+                (*cu_query_lens.device_ptr(), num_query_seqs)
             };
 
             unsafe {
                 // Calculate shared memory requirement for optimized kernel:
                 // smem_size = 32 (SeqInfo) + 2 * head_size * block_size * sizeof(cache_t)
                 // sizeof(cache_t) = 2 for fp16/bf16, 1 for fp8
-                let cache_elem_size = if k_scales_ptr.is_null() { 2usize } else { 1usize };
+                let cache_elem_size = if k_scales_ptr.is_null() {
+                    2usize
+                } else {
+                    1usize
+                };
                 let smem_size = 32 + 2 * head_size * block_size * cache_elem_size;
 
                 // Use optimized kernel with shared memory tiling when:
-                // 1. KV cache is large (num_blocks > 64, i.e., >4096 tokens with block_size=64)
+                // 1. Tokens attention with KV cache is large (i.e., >1024 tokens)
                 // 2. Single sequence (optimized kernel assumes all tokens in chunk share same KV blocks)
                 // 3. Shared memory fits within 64KB (minimum on modern GPUs, extended via cudaFuncSetAttribute)
-                if num_seqs > 1024 && num_seqs_bt == 1 && smem_size <= 64 * 1024 {
+                let single_seq = num_query_seqs == 1 && num_seqs_bt == 1;
+                if num_seqs > 1024 && single_seq && smem_size <= 64 * 1024 {
                     kernels::ffi::paged_attention_prefill_opt(
                         out_ptr,
                         q_ptr,

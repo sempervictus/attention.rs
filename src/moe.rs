@@ -86,31 +86,49 @@ pub fn moe_gemm(
         };
 
         let output = unsafe { dev.alloc::<T>(size_m * size_n) }.w()?;
-        let expert_counts = unsafe { dev.alloc::<u32>(num_experts) }.w()?;
-        let expert_offsets = unsafe { dev.alloc::<u32>(num_experts + 1) }.w()?;
 
         let stream = *dev.cu_stream() as i64;
         use core::ffi::c_void;
 
         unsafe {
-            ffi::moe_gemm_wmma(
-                *input.device_ptr() as *const c_void,   // [size_m, size_k]
-                *weights.device_ptr() as *const c_void, // [num_experts, size_n, size_k]
-                *sorted_token_ids.device_ptr() as *const i32,
-                *experts_ids.device_ptr() as *const i32,
-                topk_weights_ptr,
-                *output.device_ptr() as *mut c_void, // [size_m, size_n]
-                *expert_counts.device_ptr() as *mut i32, // pre-allocated buffer [num_experts]
-                *expert_offsets.device_ptr() as *mut i32, // pre-allocated buffer [num_experts + 1]
-                num_experts as i32,
-                topk as i32,
-                size_m as i32,
-                size_n as i32,
-                size_k as i32,
-                data_type as i32, // 0=float16, 1=bf16 (for input/output)
-                is_prefill,
-                stream as i64,
-            );
+            if is_prefill || size_m > 8 {
+                let expert_counts = dev.alloc::<u32>(num_experts).w()?;
+                let expert_offsets = dev.alloc::<u32>(num_experts + 1).w()?;
+                ffi::moe_gemm_wmma(
+                    *input.device_ptr() as *const c_void,   // [size_m, size_k]
+                    *weights.device_ptr() as *const c_void, // [num_experts, size_n, size_k]
+                    *sorted_token_ids.device_ptr() as *const i32,
+                    *experts_ids.device_ptr() as *const i32,
+                    topk_weights_ptr,
+                    *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                    *expert_counts.device_ptr() as *mut i32, // pre-allocated buffer [num_experts]
+                    *expert_offsets.device_ptr() as *mut i32, // pre-allocated buffer [num_experts + 1]
+                    num_experts as i32,
+                    topk as i32,
+                    size_m as i32,
+                    size_n as i32,
+                    size_k as i32,
+                    data_type as i32, // 0=float16, 1=bf16 (for input/output)
+                    is_prefill,
+                    stream as i64,
+                );
+            } else {
+                ffi::moe_gemv(
+                    *input.device_ptr() as *const c_void,   // [size_m, size_k]
+                    *weights.device_ptr() as *const c_void, // [num_experts, size_n, size_k]
+                    *sorted_token_ids.device_ptr() as *const i32,
+                    *experts_ids.device_ptr() as *const i32,
+                    topk_weights_ptr,
+                    *output.device_ptr() as *mut c_void, // [size_m, size_n]
+                    num_experts as i32,
+                    topk as i32,
+                    size_m as i32,
+                    size_n as i32,
+                    size_k as i32,
+                    data_type as i32, // 0=float16, 1=bf16 (for input/output)
+                    stream as i64,
+                );
+            }
         }
 
         let output = candle::CudaStorage::wrap_cuda_slice(output, dev.clone());
