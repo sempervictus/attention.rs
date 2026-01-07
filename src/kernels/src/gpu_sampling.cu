@@ -246,10 +246,10 @@ __global__ void stageB_reduce_and_sample(
     // top-p within top-k
     int cutoff = k_eff;
     if (top_p > 0.0f && top_p < 1.0f) {
-      float cum = 0.0f;
-      for (int t = 0; t < k_eff; ++t) {
-        cum += probs[t];
-        if (cum >= top_p) { cutoff = t + 1; break; }
+      double cum = 0.0;
+      for (int t = 0; t < K; ++t) {
+        cum += (double)probs[t];
+        if (cum >= (double)top_p) { cutoff = t + 1; break; }
       }
     }
 
