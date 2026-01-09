@@ -24,6 +24,7 @@
 #include <cuda_runtime.h>
 #include <type_traits>
 #include "attention/attention_dtypes.h"
+#include "attention/dtype_fp8.cuh"
 
 namespace vllm {
 
@@ -135,13 +136,17 @@ __global__ void moe_gemv_kernel(
       // Use native vector multiply, then convert to float for accumulation
       // For half2: uses __hmul2, for bfloat162: uses equivalent intrinsics
       if constexpr (std::is_same<T, half>::value) {
-        half2 prod = __hmul2(in_v2[i], w_v2[i]);
-        sum += __low2float(prod) + __high2float(prod);
+        float2 in_f = __half22float2(in_v2[i]);
+        float2 w_f = __half22float2(w_v2[i]);
+        sum = fmaf(in_f.x, w_f.x, sum);
+        sum = fmaf(in_f.y, w_f.y, sum);
       } else {
-        // For BF16, convert each element to float and accumulate
-        // Note: __hmul2 doesn't work with bfloat162 on older CUDA versions
-        sum += vllm::to_float(in_v2[i].x) * vllm::to_float(w_v2[i].x);
-        sum += vllm::to_float(in_v2[i].y) * vllm::to_float(w_v2[i].y);
+        // For BF16, multiply in bf16 and accumulate in f32.
+#ifndef NO_BF16_KERNEL
+        __nv_bfloat162 prod = __hmul2(in_v2[i], w_v2[i]);
+        float2 f = vllm::bf1622float2(prod);
+        sum += f.x + f.y;
+#endif
       }
     }
   }
@@ -352,5 +357,193 @@ extern "C" void moe_gemv_transposed(
 #endif
   else {
     fprintf(stderr, "moe_gemv_transposed: unsupported dtype.\n");
+  }
+}
+
+#define CEILDIV(x,y) (((x) + (y) - 1) / (y))
+
+
+/**
+ * @brief MoE GEMV kernel for FP8 weights with block-wise scales.
+ *
+ * Uses uint8_t FP8 weights and converts to T (half/bf16) using scaled_convert.
+ * Each block computes one output element for one token.
+ *
+ * @tparam T Data type for input/output: half or nv_bfloat16
+ * @tparam BLOCK_SIZE Number of threads per block
+ */
+template <typename T, int BLOCK_SIZE = 256>
+__global__ void moe_gemv_kernel_fp8(
+    const T *__restrict__ input,                  // [M, K]
+    const uint8_t *__restrict__ weights,          // [num_experts, N, K] FP8
+    const float *__restrict__ weight_scales,      // [num_experts, scale_n_dim, scale_k_dim]
+    const int32_t *__restrict__ sorted_token_ids, // [M]
+    const int32_t *__restrict__ expert_ids,       // [M]
+    const float *__restrict__ topk_weights,       // [M] optional, can be nullptr
+    T *__restrict__ output,                       // [M, N]
+    const int num_experts, const int topk, const int M, const int N,
+    const int K, const int block_size_n, const int block_size_k) {
+  
+  const int row = blockIdx.x;         // N dimension
+  const int token_idx = blockIdx.y;   // Token index
+
+  if (token_idx >= M || row >= N)
+    return;
+
+  const int token_id = sorted_token_ids[token_idx];
+  const int expert = expert_ids[token_idx];
+  if (expert < 0 || expert >= num_experts)
+    return;
+
+  // Get input pointer
+  const int input_idx = token_id / (topk_weights ? 1 : topk);
+  const T *input_row = input + (size_t)input_idx * K;
+  
+  // FP8 weight row for this expert and output row
+  const uint8_t *weight_row = weights + (size_t)expert * N * K + (size_t)row * K;
+  
+  // Scale layout: [num_experts, scale_n_dim, scale_k_dim]
+  const int scale_n_dim = CEILDIV(N, block_size_n);
+  const int scale_k_dim = CEILDIV(K, block_size_k);
+  const float *expert_scales = weight_scales + (size_t)expert * scale_n_dim * scale_k_dim;
+  const int scale_n_idx = row / block_size_n;
+
+  const int tid = threadIdx.x;
+
+  float sum = 0.0f;
+
+  // Process 4 FP8 values at a time using uint32_t loads
+  const int k_vec4 = K / 4;
+  for (int k = tid; k < k_vec4; k += BLOCK_SIZE) {
+    int k_base = k * 4;
+    
+    // Load 4 FP8 weights as uint32_t
+    uint32_t w4 = __ldg(reinterpret_cast<const uint32_t *>(&weight_row[k_base]));
+    
+    // Get scale for this K block
+    int scale_k_idx = k_base / block_size_k;
+    float scale = expert_scales[scale_n_idx * scale_k_dim + scale_k_idx];
+    
+    uint8_t w0 = (w4 >> 0) & 0xFF;
+    uint8_t w1 = (w4 >> 8) & 0xFF;
+    uint8_t w2 = (w4 >> 16) & 0xFF;
+    uint8_t w3 = (w4 >> 24) & 0xFF;
+
+    float4 w = make_float4(
+        vllm::fp8::dispatch_fp8_to_float(w0),
+        vllm::fp8::dispatch_fp8_to_float(w1),
+        vllm::fp8::dispatch_fp8_to_float(w2),
+        vllm::fp8::dispatch_fp8_to_float(w3));
+
+    float2 i01;
+    float2 i23;
+    if (std::is_same<T, half>::value) {
+      const __half2* in2 = reinterpret_cast<const __half2*>(&input_row[k_base]);
+      i01 = __half22float2(in2[0]);
+      i23 = __half22float2(in2[1]);
+    } else {
+#ifndef NO_BF16_KERNEL
+      const __nv_bfloat162* in2 = reinterpret_cast<const __nv_bfloat162*>(&input_row[k_base]);
+      i01 = vllm::bf1622float2(in2[0]);
+      i23 = vllm::bf1622float2(in2[1]);
+#endif
+    }
+
+    float partial_sum = 0.0f;
+    partial_sum = fmaf(i01.x, w.x, partial_sum);
+    partial_sum = fmaf(i01.y, w.y, partial_sum);
+    partial_sum = fmaf(i23.x, w.z, partial_sum);
+    partial_sum = fmaf(i23.y, w.w, partial_sum);
+
+    sum += scale * partial_sum;
+  }
+
+  // Handle remainder
+  const int remainder_start = k_vec4 * 4;
+  for (int k = remainder_start + tid; k < K; k += BLOCK_SIZE) {
+    uint8_t w = weight_row[k];
+    int scale_k_idx = k / block_size_k;
+    float scale = expert_scales[scale_n_idx * scale_k_dim + scale_k_idx];
+    float wf = vllm::fp8::dispatch_fp8_to_float(w) * scale;
+    sum += vllm::to_float(input_row[k]) * wf;
+  }
+
+  // Warp-level reduction
+  sum = vllm_rs::warp_reduce_sum(sum);
+
+  // Inter-warp reduction using shared memory
+  constexpr int NUM_WARPS = BLOCK_SIZE / 32;
+  __shared__ float smem[NUM_WARPS];
+  const int warp_id = tid / 32;
+  const int lane_id = tid % 32;
+
+  if (lane_id == 0) {
+    smem[warp_id] = sum;
+  }
+  __syncthreads();
+
+  // Final reduction in the first warp
+  if (warp_id == 0) {
+    sum = (lane_id < NUM_WARPS) ? smem[lane_id] : 0.0f;
+
+#pragma unroll
+    for (int offset = NUM_WARPS / 2; offset > 0; offset >>= 1) {
+      sum += __shfl_xor_sync(0xffffffff, sum, offset);
+    }
+
+    // Thread 0 writes the final result
+    if (lane_id == 0) {
+      if (topk_weights) {
+        sum *= topk_weights[token_id];
+      }
+      T out_val;
+      vllm::from_float(out_val, sum);
+      output[(size_t)token_id * N + row] = out_val;
+    }
+  }
+}
+
+extern "C" void moe_gemv_fp8(
+    const void *input,                // input [size_m or size_m / topk, size_k]
+    const uint8_t *weights,           // weights [num_experts, size_n, size_k] FP8
+    const float *weight_scales,       // [num_experts, scale_n_dim, scale_k_dim]
+    const int32_t *sorted_token_ids,
+    const int32_t *expert_ids,
+    const float *topk_weights,        // device ptr or nullptr
+    void *output,                     // output [size_m, size_n]
+    int num_experts,
+    int topk,
+    int size_m,
+    int size_n,
+    int size_k,
+    int block_size_n,
+    int block_size_k,
+    int dtype,                        // 0=float16, 1=bf16 (for input/output)
+    cudaStream_t stream) {
+
+  constexpr int BLOCK_SIZE = 256;
+
+  // Grid: (N, M) - one block per output element per token
+  dim3 grid(size_n, size_m);
+  dim3 block(BLOCK_SIZE);
+
+  if (dtype == 0) { // FP16
+    moe_gemv_kernel_fp8<half, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+        reinterpret_cast<const half *>(input),
+        weights, weight_scales, sorted_token_ids, expert_ids,
+        topk_weights, reinterpret_cast<half *>(output), num_experts, topk,
+        size_m, size_n, size_k, block_size_n, block_size_k);
+  }
+#ifndef NO_BF16_KERNEL
+  else if (dtype == 1) { // BF16
+    moe_gemv_kernel_fp8<nv_bfloat16, BLOCK_SIZE><<<grid, block, 0, stream>>>(
+        reinterpret_cast<const nv_bfloat16 *>(input),
+        weights, weight_scales, sorted_token_ids, expert_ids,
+        topk_weights, reinterpret_cast<nv_bfloat16 *>(output), num_experts, topk,
+        size_m, size_n, size_k, block_size_n, block_size_k);
+  }
+#endif
+  else {
+    fprintf(stderr, "moe_gemv_fp8: unsupported dtype.\n");
   }
 }

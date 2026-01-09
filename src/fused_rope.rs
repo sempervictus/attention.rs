@@ -583,7 +583,7 @@ impl FusedRope {
     // ========================================================================
 
     /// Apply fused rotary embedding in-place (Metal version)
-    #[cfg(feature = "metal")]
+    #[cfg(not(feature = "cuda"))]
     pub fn apply_inplace(
         q: &Tensor,
         k: &Tensor,
@@ -692,7 +692,7 @@ impl FusedRope {
     }
 
     /// Apply fused rotary embedding (Metal version) - returns new tensors
-    #[cfg(feature = "metal")]
+    #[cfg(not(feature = "cuda"))]
     pub fn apply(
         q: &Tensor,
         k: &Tensor,
@@ -709,7 +709,7 @@ impl FusedRope {
     }
 
     /// Convenience: non-interleaved RoPE (Metal)
-    #[cfg(feature = "metal")]
+    #[cfg(not(feature = "cuda"))]
     pub fn apply_rope(
         q: &Tensor,
         k: &Tensor,
@@ -721,7 +721,7 @@ impl FusedRope {
     }
 
     /// Convenience: interleaved RoPE (Metal)
-    #[cfg(feature = "metal")]
+    #[cfg(not(feature = "cuda"))]
     pub fn apply_rope_i(
         q: &Tensor,
         k: &Tensor,
@@ -733,7 +733,7 @@ impl FusedRope {
     }
 
     /// Convenience: non-interleaved RoPE in-place (Metal)
-    #[cfg(feature = "metal")]
+    #[cfg(not(feature = "cuda"))]
     pub fn apply_rope_inplace(
         q: &Tensor,
         k: &Tensor,
@@ -745,7 +745,7 @@ impl FusedRope {
     }
 
     /// Convenience: interleaved RoPE in-place (Metal)
-    #[cfg(feature = "metal")]
+    #[cfg(not(feature = "cuda"))]
     pub fn apply_rope_i_inplace(
         q: &Tensor,
         k: &Tensor,

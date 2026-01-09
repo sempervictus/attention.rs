@@ -1,19 +1,19 @@
 [package]
 name = "attention-rs"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 
 [dependencies]
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "8e43e56" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "8e43e56" }
-candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "8e43e56", optional = true }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "06b1cc8" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "06b1cc8" }
+candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "06b1cc8", optional = true }
 serde = { version = "1.0.190", features = ["serde_derive"] }
 serde_json = "1.0.108"
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
 tracing = "0.1.40"
 parking_lot = "0.12.4"
 rayon="1.10.0"
-kernels = {path = "./src/kernels", version="0.2.0", optional = true}
+kernels = {path = "./src/kernels", version="0.2.1", optional = true}
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 metal-kernels = {path = "./src/metal-kernels", version="0.1.9", optional = true}
 
