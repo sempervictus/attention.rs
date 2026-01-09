@@ -584,6 +584,7 @@ impl FusedRope {
 
     /// Apply fused rotary embedding in-place (Metal version)
     #[cfg(not(feature = "cuda"))]
+    #[allow(unused)]
     pub fn apply_inplace(
         q: &Tensor,
         k: &Tensor,
@@ -658,10 +659,14 @@ impl FusedRope {
             _ => candle_core::bail!("positions must be on Metal device"),
         };
 
+        #[cfg(feature = "metal")]
         let device = q_metal.device();
+        #[cfg(feature = "metal")]
         let command_buffer = device.command_buffer()?;
+        #[cfg(feature = "metal")]
         let kernels = metal_kernels::Kernels::default();
 
+        #[cfg(feature = "metal")]
         metal_kernels::call_fused_rope(
             device.device(),
             &*command_buffer,
