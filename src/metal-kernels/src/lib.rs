@@ -1140,3 +1140,102 @@ pub fn call_fused_rope(
     encoder.dispatch_thread_groups(thread_groups_count, threads_per_threadgroup);
     Ok(())
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn call_fp8_matmul(
+    device: &Device,
+    ep: impl EncoderProvider,
+    kernels: &Kernels,
+    ty: DType,
+    input: &Buffer,
+    input_offset: usize,
+    weight: &Buffer,
+    weight_offset: usize,
+    weight_scale: &Buffer,
+    weight_scale_offset: usize,
+    output: &Buffer,
+    output_offset: usize,
+    m: i32,
+    n: i32,
+    k: i32,
+    scale_row_stride: i32,
+    block_size_y: i32,
+    block_size_x: i32,
+) -> Result<(), MetalKernelError> {
+    let is_gemv = m <= 8;
+    let name = match ty {
+        DType::F16 => {
+            if is_gemv {
+                "fp8_gemv_half"
+            } else if m <= 16 {
+                "fp8_matmul_half_16_32_32"
+            } else {
+                "fp8_matmul_half_32_32_32"
+            }
+        }
+        DType::BF16 => {
+            if is_gemv {
+                "fp8_gemv_bfloat16"
+            } else if m <= 16 {
+                "fp8_matmul_bfloat16_16_32_32"
+            } else {
+                "fp8_matmul_bfloat16_32_32_32"
+            }
+        }
+        _ => {
+            return Err(MetalKernelError::DTypeMismatch {
+                expected: vec![DType::F16, DType::BF16],
+                got: ty,
+            })
+        }
+    };
+    let pipeline = kernels.load_pipeline(device, name.to_string())?;
+    let encoder = ep.encoder();
+    let encoder: &ComputeCommandEncoderRef = encoder.as_ref();
+    encoder.set_compute_pipeline_state(&pipeline);
+
+    set_params!(
+        encoder,
+        (
+            (input, input_offset),
+            (weight, weight_offset),
+            (weight_scale, weight_scale_offset),
+            (output, output_offset),
+            m,
+            n,
+            k,
+            scale_row_stride,
+            block_size_y,
+            block_size_x
+        )
+    );
+
+    if is_gemv {
+        // Grid: (N * 32, M, 1)
+        let thread_group_size = MTLSize {
+            width: 32,
+            height: 1,
+            depth: 1,
+        };
+        let thread_groups_count = MTLSize {
+            width: n as u64, // (N * 32) / 32 = N
+            height: m as u64,
+            depth: 1,
+        };
+        encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
+    } else {
+        let thread_group_size = MTLSize {
+            width: 32,
+            height: 1,
+            depth: 1,
+        };
+        let m_block = if m <= 16 { 16 } else { 32 };
+        let thread_groups_count = MTLSize {
+            width: (n as u64 + 31) / 32,
+            height: (m as u64 + m_block - 1) / m_block,
+            depth: 1,
+        };
+        encoder.dispatch_thread_groups(thread_groups_count, thread_group_size);
+    }
+    Ok(())
+}

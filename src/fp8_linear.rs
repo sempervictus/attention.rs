@@ -1,5 +1,7 @@
 #[cfg(feature = "cuda")]
 use crate::kernels::ffi;
+#[cfg(feature = "metal")]
+use crate::metal_kernels;
 #[cfg(feature = "cuda")]
 use candle_core::cuda_backend::cudarc::driver::DevicePtr;
 use candle_core::{DType, Device, Result, Tensor};
@@ -142,7 +144,61 @@ pub fn fp8_matmul(
             }
         }
         (Device::Cuda(_), _) => candle_core::bail!("fp8_matmul requires f16 or bf16 input"),
-        _ => candle_core::bail!("fp8_matmul only supports CUDA"),
+        #[cfg(feature = "metal")]
+        (Device::Metal(dev), _) => {
+            let (input_storage, input_layout) = input.storage_and_layout();
+            let input_slice = match &*input_storage {
+                candle_core::Storage::Metal(c) => c,
+                _ => candle_core::bail!("input must be a metal tensor"),
+            };
+            let input_offset = input_layout.start_offset() * input.dtype().size_in_bytes();
+
+            let (weight_storage, weight_layout) = weight.storage_and_layout();
+            let weight_slice = match &*weight_storage {
+                candle_core::Storage::Metal(c) => c,
+                _ => candle_core::bail!("weight must be a metal tensor"),
+            };
+            let weight_offset = weight_layout.start_offset() * weight.dtype().size_in_bytes();
+
+            let (scale_storage, scale_layout) = weight_scale.storage_and_layout();
+            let scale_slice = match &*scale_storage {
+                candle_core::Storage::Metal(c) => c,
+                _ => candle_core::bail!("weight_scale must be a metal tensor"),
+            };
+            let scale_offset = scale_layout.start_offset() * weight_scale.dtype().size_in_bytes();
+
+            let (output_storage, output_layout) = output.storage_and_layout();
+            let output_slice = match &*output_storage {
+                candle_core::Storage::Metal(c) => c,
+                _ => candle_core::bail!("output allocation failed"),
+            };
+            let output_offset = output_layout.start_offset() * output.dtype().size_in_bytes();
+
+            let command_buffer = dev.command_buffer()?;
+
+            metal_kernels::call_fp8_matmul(
+                dev.device(),
+                &command_buffer,
+                metal_kernels::Kernels::default(),
+                dtype,
+                input_slice.buffer(),
+                input_offset,
+                weight_slice.buffer(),
+                weight_offset,
+                scale_slice.buffer(),
+                scale_offset,
+                output_slice.buffer(),
+                output_offset,
+                m as i32,
+                n as i32,
+                k as i32,
+                scale_row_stride as i32,
+                block_size[0] as i32,
+                block_size[1] as i32,
+            )
+            .map_err(candle_core::Error::wrap)?;
+        }
+        _ => candle_core::bail!("fp8_matmul only supports CUDA and Metal"), // Adjusted error message
     }
 
     Ok(output)
