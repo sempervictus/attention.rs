@@ -20,6 +20,7 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/gpu_sampling.cuh");
     println!("cargo:rerun-if-changed=src/gpu_sampling.cu");
     println!("cargo:rerun-if-changed=src/fused_rope.cu");
+    println!("cargo:rerun-if-changed=src/fp8_matmul.cu");
     let marlin_disabled = std::env::var("CARGO_FEATURE_NO_MARLIN").is_ok();
     let fp8_kvcache_disabled = std::env::var("CARGO_FEATURE_NO_FP8_KVCACHE").is_ok();
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or("".to_string()));
