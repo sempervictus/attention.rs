@@ -24,6 +24,12 @@ __device__ __forceinline__ float get_scale(const float *__restrict__ scale,
                                            int block_size_y, int block_size_x) {
   int sr = n / block_size_y;
   int sc = k / block_size_x;
+
+  // Validate bounds before load
+  if (sr >= scale_stride || sc >= (block_size_x + BLOCK_K - 1) / BLOCK_K) {
+      return 0.0f; // or abort with debug print
+  }
+
   return __ldg(&scale[sr * scale_stride + sc]);
 }
 
