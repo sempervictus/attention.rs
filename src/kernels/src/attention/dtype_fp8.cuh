@@ -220,6 +220,10 @@ __inline__ __device__ Tout scaled_vec_conversion(
 template <>
 __inline__ __device__ uint16_t scaled_vec_conversion<uint16_t, uint8_t>(
     const uint8_t& a, const float scale) {
+  // Validate input range
+  if (a > 0xFFu) {
+      return __float2half(0.0f);
+  }
   float f = dispatch_fp8_to_float(a);
   return __float2half(f * scale);
 }
