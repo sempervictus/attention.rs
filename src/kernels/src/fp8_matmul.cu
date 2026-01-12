@@ -105,8 +105,8 @@ __global__ void fp8_matmul_kernel(const T *__restrict__ input,
                 float s = __ldg(&weight_scale[scale_row * scale_row_stride + scale_k_idx_tile]);
 
                 if (lk+3 < K) { // validate all 4 elements are within tensor bounds
-                    // Vectorized conversion: fp8x4 -> Float4 with scaling
-                    float4 w_vals = vllm::fp8::scaled_vec_conversion<Float4, uint32_t>(*w4_ptr, s);
+                    // Vectorized conversion: fp8x4 -> float4 with scaling
+                    float4 w_vals = vllm::fp8::scaled_vec_conversion<float4, uint32_t>(*w4_ptr, s);
 
                     // Store into shared memory (if within bounds)
                     if (lk+0 < BLOCK_K) s_weight[ln][lk+0] = w_vals.x;
