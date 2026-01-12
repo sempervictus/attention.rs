@@ -23,7 +23,7 @@
 #include <cstdint>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
-#define DIV_CONST 240.0f;
+#define DIV_CONST 240.0f
 
 template<typename T>
 __device__ __forceinline__ float to_float_abs(T x);
@@ -158,6 +158,10 @@ extern "C" void update_kv_scales_f16(
 extern "C" void update_kv_scales_bf16(
     void* k, void* v, const long num_elements, float* k_scales, float* v_scales, int64_t stream_
 ) { 
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+    return; 
+#else
     update_scales_typed<__nv_bfloat16>(reinterpret_cast<__nv_bfloat16*>(k), reinterpret_cast<__nv_bfloat16*>(v), num_elements, k_scales, v_scales, stream_); 
+#endif
 }
 

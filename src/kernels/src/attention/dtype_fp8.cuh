@@ -360,7 +360,8 @@ __inline__ __device__ Float8_ scaled_vec_conversion<Float8_, uint2>(
 template <>
 __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, uint16_t>(
     const uint16_t& a, const float scale) {
-  float f = fminf(fmaxf(__half2float(a) / scale, MIN_FP8_VALUE), MAX_FP8_VALUE);
+  // float f = fminf(fmaxf(__half2float(a) / scale, MIN_FP8_VALUE), MAX_FP8_VALUE);
+  float f = __half2float(a) / scale;
   return dispatch_float_to_fp8(f);
 }
 
@@ -368,7 +369,8 @@ __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, uint16_t>(
 template <>
 __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, __nv_bfloat16>(
     const __nv_bfloat16& a, const float scale) {
-  float f = fminf(fmaxf(__bfloat162float(a) / scale, MIN_FP8_VALUE), MAX_FP8_VALUE);
+  // float f = fminf(fmaxf(__bfloat162float(a) / scale, MIN_FP8_VALUE), MAX_FP8_VALUE);
+  float f = __bfloat162float(a) / scale;
   return dispatch_float_to_fp8(f);
 }
 
@@ -376,7 +378,8 @@ __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, __nv_bfloat16>(
 template <>
 __inline__ __device__ uint8_t scaled_vec_conversion<uint8_t, float>(
     const float& a, const float scale) {
-  float f = fminf(fmaxf(a / scale, MIN_FP8_VALUE), MAX_FP8_VALUE);
+  // float f = fminf(fmaxf(a / scale, MIN_FP8_VALUE), MAX_FP8_VALUE);
+  float f = a / scale;
   return dispatch_float_to_fp8(f);
 }
 
