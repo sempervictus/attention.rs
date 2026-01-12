@@ -49,6 +49,19 @@ __device__ __forceinline__ float warp_reduce_sum(float x) {
   return x;
 }
 
+inline __device__ void zero(__nv_bfloat162& dst) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+  assert(false);
+#else
+  dst.x = __ushort_as_bfloat16((unsigned short)0x0000U);
+  dst.y = dst.x;
+#endif
+}
+inline __device__ void zero(half2& dst) {
+  dst.x = __half_as_ushort(__float2half(0));
+  dst.y = __half_as_ushort(__float2half(0));
+}
+
 } // namespace vllm_rs
 
 /**
@@ -122,6 +135,10 @@ __global__ void moe_gemv_kernel(
 
   float sum = 0.0f;
 
+  #ifndef NO_BF16_KERNEL
+    __nv_bfloat162 prod;
+    vllm_rs::zero(prod);
+  #endif
   // Main vectorized loop - process 8 elements at a time
   for (int k = tid; k < k_vec; k += BLOCK_SIZE) {
     float4 in_val = in_vec[k];
@@ -143,14 +160,16 @@ __global__ void moe_gemv_kernel(
       } else {
         // For BF16, multiply in bf16 and accumulate in f32.
 #ifndef NO_BF16_KERNEL
-        __nv_bfloat162 prod = __hmul2(in_v2[i], w_v2[i]);
-        float2 f = vllm::bf1622float2(prod);
-        sum += f.x + f.y;
+        prod = __hadd2(__hmul2(in_v2[i], w_v2[i]), prod);
 #endif
       }
     }
   }
 
+  #ifndef NO_BF16_KERNEL
+    float2 f = vllm::bf1622float2(prod);
+    sum += f.x + f.y;
+  #endif
   // Handle remainder if K is not divisible by LOAD_VEC_SIZE
   const int remainder_start = k_vec * LOAD_VEC_SIZE;
   for (int k = remainder_start + tid; k < K; k += BLOCK_SIZE) {
