@@ -25,11 +25,6 @@ __device__ __forceinline__ float get_scale(const float *__restrict__ scale,
   int sr = n / block_size_y;
   int sc = k / block_size_x;
 
-  // Validate bounds before load
-  if (sr >= scale_stride || sc >= (block_size_x + BLOCK_K - 1) / BLOCK_K) {
-      return 0.0f; // or abort with debug print
-  }
-
   return __ldg(&scale[sr * scale_stride + sc]);
 }
 
@@ -109,7 +104,7 @@ __global__ void fp8_matmul_kernel(const T *__restrict__ input,
                 int scale_row = gn / block_size_y;
                 float s = __ldg(&weight_scale[scale_row * scale_row_stride + scale_k_idx_tile]);
 
-                if (lk+3 < K) {
+                if (lk+3 < K) { // validate all 4 elements are within tensor bounds
                     // Vectorized conversion: fp8x4 -> Float4 with scaling
                     float4 w_vals = vllm::fp8::scaled_vec_conversion<Float4, uint32_t>(*w4_ptr, s);
 
@@ -118,7 +113,11 @@ __global__ void fp8_matmul_kernel(const T *__restrict__ input,
                     if (lk+1 < BLOCK_K) s_weight[ln][lk+1] = w_vals.y;
                     if (lk+2 < BLOCK_K) s_weight[ln][lk+2] = w_vals.z;
                     if (lk+3 < BLOCK_K) s_weight[ln][lk+3] = w_vals.w;
+
+                } else {
+                    goto fallback_scalar_weight_load; // fall back to scalar
                 }
+
             } else {
 
 #endif
@@ -130,7 +129,12 @@ fallback_scalar_weight_load:
 
                 if (tile_scale_uniform) {
                     int scale_row = gn / block_size_y;
-                    s = __ldg(&weight_scale[scale_row * scale_row_stride + scale_k_idx_tile]);
+                    if (scale_row >= scale_row_stride ||
+                        scale_k_idx_tile >= block_size_x / BLOCK_K) {
+                        s = 0.0f;
+                    } else {
+                        s = __ldg(&weight_scale[scale_row * scale_row_stride + scale_k_idx_tile]);
+                    }
                 } else {
                     s = get_scale(weight_scale, gn, gk, scale_row_stride, block_size_y,
                                                 block_size_x);
