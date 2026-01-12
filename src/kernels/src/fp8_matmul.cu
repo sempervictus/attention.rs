@@ -97,23 +97,19 @@ __global__ void fp8_matmul_kernel(const T *__restrict__ input,
 
             if (tile_scale_uniform) {
 
-                // Load 4 FP8 weights at once using uint32_t
-                const uint32_t* w4_ptr = reinterpret_cast<const uint32_t*>(&weight[gn * K + lk]);
+                // Check alignment and bounds before vectorized load
+                if ((lk % 4 == 0) && (k_tile + lk + 3 < K)) {
+                    // Safe to load uint32_t: aligned and in-bounds
+                    const uint32_t* w4_ptr = reinterpret_cast<const uint32_t*>(&weight[gn * K + lk]);
+                    int scale_row = gn / block_size_y;
+                    float s = __ldg(&weight_scale[scale_row * scale_row_stride + scale_k_idx_tile]);
 
-                // Get scale for this row/column group
-                int scale_row = gn / block_size_y;
-                float s = __ldg(&weight_scale[scale_row * scale_row_stride + scale_k_idx_tile]);
-
-                if (lk+3 < K) { // validate all 4 elements are within tensor bounds
-                    // Vectorized conversion: fp8x4 -> float4 with scaling
                     float4 w_vals = vllm::fp8::scaled_vec_conversion<float4, uint32_t>(*w4_ptr, s);
 
-                    // Store into shared memory (if within bounds)
                     if (lk+0 < BLOCK_K) s_weight[ln][lk+0] = w_vals.x;
                     if (lk+1 < BLOCK_K) s_weight[ln][lk+1] = w_vals.y;
                     if (lk+2 < BLOCK_K) s_weight[ln][lk+2] = w_vals.z;
                     if (lk+3 < BLOCK_K) s_weight[ln][lk+3] = w_vals.w;
-
                 } else {
                     goto fallback_scalar_weight_load; // fall back to scalar
                 }
