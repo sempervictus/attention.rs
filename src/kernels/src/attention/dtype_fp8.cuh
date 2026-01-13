@@ -193,7 +193,7 @@ static inline __device__ float softmax_fp8_to_float_e4m3(uint8_t x) {
   // If native fp8 intrinsics exist, use them.
   static inline __device__ uint8_t dispatch_float_to_fp8(float f) {
     // use NV intrinsic that returns __nv_fp8_storage_t (uint8-ish)
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && !defined(NO_HARDWARE_FP8)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890) && !defined(NO_HARDWARE_FP8)
     __nv_fp8_storage_t r = __nv_cvt_float_to_fp8(f, __NV_SATFINITE, __NV_E4M3);
     return (uint8_t)r;
 #else
@@ -201,9 +201,8 @@ static inline __device__ float softmax_fp8_to_float_e4m3(uint8_t x) {
 #endif
   }
   static inline __device__ float dispatch_fp8_to_float(uint8_t a) {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900) && !defined(NO_HARDWARE_FP8)
-    __half_raw hr = __nv_cvt_fp8_to_halfraw(a, __NV_E4M3);
-    return __half2float(hr.x);
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890) && !defined(NO_HARDWARE_FP8)
+    return __half2float(__nv_cvt_fp8_to_halfraw(a, __NV_E4M3));
 #else
     return softmax_fp8_to_float_e4m3(a);
 #endif
