@@ -1,4 +1,7 @@
 #pragma once
+#ifndef NO_HARDWARE_FP8
+  #include "cuda_fp8.h"
+#endif
 #include <assert.h>
 #include <float.h>
 #include <stdint.h>
@@ -186,9 +189,6 @@ static inline __device__ float softmax_fp8_to_float_e4m3(uint8_t x) {
 }
 
 // --- Dispatch wrappers that prefer NV intrinsics when available ---
-#ifndef NO_HARDWARE_FP8
-  #include "cuda_fp8.h"
-#endif
 
   // If native fp8 intrinsics exist, use them.
   static inline __device__ uint8_t dispatch_float_to_fp8(float f) {
