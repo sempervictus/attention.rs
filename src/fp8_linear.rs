@@ -405,7 +405,7 @@ pub fn fp8_matmul_cutlass(
     }
 
     if pad_len > 0 {
-        output = output.narrow(0, 0, m)?;
+        output = output.narrow(0, 0, m)?.contiguous()?;
     }
 
     Ok(output)
