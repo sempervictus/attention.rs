@@ -229,6 +229,7 @@ pub fn fp8_matmul(
 /// * `weight` - Weight tensor B of shape [K, N] (stored as u8, column-major)
 /// * `weight_scale` - Scales for weight tensor
 /// * `block_size` - [block_size_y, block_size_x] for scaling (must be [128, 128])
+#[cfg(all(feature = "cuda", feature = "cutlass"))]
 #[allow(unused)]
 pub fn fp8_matmul_cutlass(
     input: &Tensor,
@@ -289,16 +290,13 @@ pub fn fp8_matmul_cutlass(
     let dtype = input.dtype();
     let scale_row_stride = (k + block_size[1] - 1) / block_size[1];
 
-    #[cfg(feature = "cuda")]
     let sm_version = if matches!(dev, Device::Cuda(_)) {
         cuda_utils::sm_version(dev.as_cuda_device()?).unwrap_or(0) as i32
     } else {
-        0
+        80
     };
-    #[cfg(feature = "cuda")]
+
     let sm90_plus = sm_version >= 90;
-    #[cfg(not(feature = "cuda"))]
-    let sm90_plus = false;
     if !sm90_plus {
         candle_core::bail!("fp8_matmul_cutlass requires sm90+");
     }
@@ -338,7 +336,6 @@ pub fn fp8_matmul_cutlass(
         get_cuda_slice::<half::bf16>(&input_padded)?
     };
 
-    #[cfg(feature = "cutlass")]
     unsafe {
         let num_groups = m_padded * k_over_128;
         let group_size = 128;
@@ -358,7 +355,6 @@ pub fn fp8_matmul_cutlass(
     }
 
     match (dev, dtype) {
-        #[cfg(feature = "cuda")]
         (Device::Cuda(_), DType::F16) => {
             let out_ptr = get_cuda_slice::<half::f16>(&output)?;
             unsafe {
@@ -379,7 +375,6 @@ pub fn fp8_matmul_cutlass(
                 )
             }
         }
-        #[cfg(feature = "cuda")]
         (Device::Cuda(_), DType::BF16) => {
             let out_ptr = get_cuda_slice::<half::bf16>(&output)?;
             unsafe {
