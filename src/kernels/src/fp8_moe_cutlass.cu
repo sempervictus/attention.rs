@@ -587,7 +587,7 @@ extern "C" void moe_fp8_grouped_gemm_f16(
 
 #if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
     (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
-  if (sm_version == 120) {
+  if (sm_version >= 120) {
     auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm120GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
     if (status != cutlass::Status::kSuccess) {

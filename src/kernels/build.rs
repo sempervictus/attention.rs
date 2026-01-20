@@ -52,7 +52,9 @@ fn main() -> Result<()> {
         builder = builder.arg("-DNO_HARDWARE_FP8");
     }
 
-    if compute_cap >= 1200 {
+    if compute_cap >= 1210 {
+        builder = builder.arg("--gpu-architecture=sm_121");
+    } else if compute_cap >= 1200 {
         builder = builder.arg("--gpu-architecture=sm_120");
     } else if compute_cap >= 1000 {
         builder = builder.arg("--gpu-architecture=sm_100");
