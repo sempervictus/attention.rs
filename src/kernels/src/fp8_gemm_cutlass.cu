@@ -437,8 +437,6 @@ void fp8_gemm_launcher_sm90(
     }
 }
 
-#if (defined(CUTLASS_ARCH_MMA_SM100A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
 template <
     typename OutType,
     typename MmaTileShape,
@@ -581,10 +579,7 @@ void sm100_fp8_blockwise_dispatch_shape(
         out, a, b, scales_a, scales_b, m, n, k, stream);
   }
 }
-#endif
 
-#if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
 template <
     typename OutType,
     typename MmaTileShape,
@@ -724,7 +719,6 @@ void sm120_fp8_blockwise_dispatch_shape(
   launch_sm120_fp8_blockwise_scaled_mm<OutType, MmaTileShape, PerSmTileShape, EpilogueTileShape, ScalesPerTile>(
       out, a, b, scales_a, scales_b, m, n, k, stream);
 }
-#endif
 
 #endif
 
@@ -746,27 +740,17 @@ extern "C" void fp8_matmul_f16_cutlass(const uint8_t* input_q,
     auto* a_scales = const_cast<float*>(input_scale);
     auto* b_scales = const_cast<float*>(weight_scale);
 
-#if (defined(CUTLASS_ARCH_MMA_SM100A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
-#if CUDA_VERSION >= 12090
-    if (sm_version == 100 || sm_version == 103) {
-#else
-    if (sm_version == 100) {
-#endif
-        sm100_fp8_blockwise_dispatch_shape<cutlass::half_t>(
-            out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, stream);
-        return;
-    }
-#endif
-
-#if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
     if (sm_version >= 120) {
         sm120_fp8_blockwise_dispatch_shape<cutlass::half_t>(
             out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, stream);
         return;
     }
-#endif
+
+    if (sm_version == 100 || sm_version == 103) {
+        sm100_fp8_blockwise_dispatch_shape<cutlass::half_t>(
+            out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, stream);
+        return;
+    }
 
     fp8_gemm_launcher_sm90<cutlass::half_t>(
         input_q, input_scale, weight, weight_scale, out_ptr, M, N, K, stream);
@@ -791,27 +775,17 @@ extern "C" void fp8_matmul_bf16_cutlass(const uint8_t* input_q,
     auto* a_scales = const_cast<float*>(input_scale);
     auto* b_scales = const_cast<float*>(weight_scale);
 
-#if (defined(CUTLASS_ARCH_MMA_SM100A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
-#if CUDA_VERSION >= 12090
-    if (sm_version == 100 || sm_version == 103) {
-#else
-    if (sm_version == 100) {
-#endif
-        sm100_fp8_blockwise_dispatch_shape<cutlass::bfloat16_t>(
-            out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, stream);
-        return;
-    }
-#endif
-
-#if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
     if (sm_version >= 120) {
         sm120_fp8_blockwise_dispatch_shape<cutlass::bfloat16_t>(
             out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, stream);
         return;
     }
-#endif
+
+    if (sm_version == 100 || sm_version == 103) {
+        sm100_fp8_blockwise_dispatch_shape<cutlass::bfloat16_t>(
+            out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, stream);
+        return;
+    }
 
     fp8_gemm_launcher_sm90<cutlass::bfloat16_t>(
         input_q, input_scale, weight, weight_scale, out_ptr, M, N, K, stream);

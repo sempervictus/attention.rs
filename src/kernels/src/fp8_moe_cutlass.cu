@@ -442,8 +442,6 @@ struct Sm90GroupConfig {
   using LayoutSFB = decltype(ScaleConfig::deduce_layoutSFB());
 };
 
-#if (defined(CUTLASS_ARCH_MMA_SM100A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
 struct Sm100GroupConfig {
   using ArchTag = cutlass::arch::Sm100;
   using MmaTileShape = cute::Shape<cute::_128, cute::_128, cute::_128>;
@@ -454,10 +452,7 @@ struct Sm100GroupConfig {
   using LayoutSFA = decltype(ScaleConfig::deduce_layoutSFA());
   using LayoutSFB = decltype(ScaleConfig::deduce_layoutSFB());
 };
-#endif
 
-#if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
 struct Sm120GroupConfig {
   using ArchTag = cutlass::arch::Sm120;
   using MmaTileShape = cute::Shape<cute::_128, cute::_128, cute::_128>;
@@ -468,7 +463,6 @@ struct Sm120GroupConfig {
   using LayoutSFA = decltype(ScaleConfig::deduce_layoutSFA());
   using LayoutSFB = decltype(ScaleConfig::deduce_layoutSFB());
 };
-#endif
 
 }  // namespace vllm_rs_moe
 
@@ -569,24 +563,6 @@ extern "C" void moe_fp8_grouped_gemm_f16(
   int n_blocks = (n + block_size_n - 1) / block_size_n;
   int k_blocks = (k + block_size_k - 1) / block_size_k;
 
-#if (defined(CUTLASS_ARCH_MMA_SM100A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
-#if CUDA_VERSION >= 12090
-  if (sm_version == 100 || sm_version == 103) {
-#else
-  if (sm_version == 100) {
-#endif
-    auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm100GroupConfig, cutlass::layout::RowMajor>(
-        a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
-    if (status != cutlass::Status::kSuccess) {
-      printf("moe_fp8_grouped_gemm_f16 sm100 failed: %s\n", cutlassGetStatusString(status));
-    }
-    return;
-  }
-#endif
-
-#if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
   if (sm_version >= 120) {
     auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm120GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
@@ -595,9 +571,16 @@ extern "C" void moe_fp8_grouped_gemm_f16(
     }
     return;
   }
-#endif
 
-#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED) && defined(CUTLASS_ARCH_MMA_MODIFIABLE_TMA_SM90_SUPPORTED)
+  if (sm_version == 100 || sm_version == 103) {
+    auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm100GroupConfig, cutlass::layout::RowMajor>(
+        a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
+    if (status != cutlass::Status::kSuccess) {
+      printf("moe_fp8_grouped_gemm_f16 sm100 failed: %s\n", cutlassGetStatusString(status));
+    }
+    return;
+  }
+
   if (sm_version == 90) {
     auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm90GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
@@ -608,21 +591,6 @@ extern "C" void moe_fp8_grouped_gemm_f16(
   }
 #endif
   printf("moe_fp8_grouped_gemm_f16 unsupported sm_version %d\n", sm_version);
-#else
-  (void)a;
-  (void)b;
-  (void)a_scales;
-  (void)b_scales;
-  (void)expert_offsets;
-  (void)num_experts;
-  (void)n;
-  (void)k;
-  (void)block_size_n;
-  (void)block_size_k;
-  (void)sm_version;
-  (void)out;
-  (void)stream;
-#endif
 }
 
 extern "C" void moe_fp8_grouped_gemm_bf16(
@@ -647,24 +615,6 @@ extern "C" void moe_fp8_grouped_gemm_bf16(
   int n_blocks = (n + block_size_n - 1) / block_size_n;
   int k_blocks = (k + block_size_k - 1) / block_size_k;
 
-#if (defined(CUTLASS_ARCH_MMA_SM100A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
-#if CUDA_VERSION >= 12090
-  if (sm_version == 100 || sm_version == 103) {
-#else
-  if (sm_version == 100) {
-#endif
-    auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::bfloat16_t, vllm_rs_moe::Sm100GroupConfig, cutlass::layout::RowMajor>(
-        a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
-    if (status != cutlass::Status::kSuccess) {
-      printf("moe_fp8_grouped_gemm_bf16 sm100 failed: %s\n", cutlassGetStatusString(status));
-    }
-    return;
-  }
-#endif
-
-#if (defined(CUTLASS_ARCH_MMA_SM120A_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED)) && \
-    (defined(CUDA_VERSION) && CUDA_VERSION >= 12080)
   if (sm_version >= 120) {
     auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::bfloat16_t, vllm_rs_moe::Sm120GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
@@ -673,9 +623,16 @@ extern "C" void moe_fp8_grouped_gemm_bf16(
     }
     return;
   }
-#endif
 
-#if defined(CUTLASS_ARCH_MMA_SM90_SUPPORTED) && defined(CUTLASS_ARCH_MMA_MODIFIABLE_TMA_SM90_SUPPORTED)
+  if (sm_version == 100 || sm_version == 103) {
+    auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::bfloat16_t, vllm_rs_moe::Sm100GroupConfig, cutlass::layout::RowMajor>(
+        a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
+    if (status != cutlass::Status::kSuccess) {
+      printf("moe_fp8_grouped_gemm_bf16 sm100 failed: %s\n", cutlassGetStatusString(status));
+    }
+    return;
+  }
+
   if (sm_version == 90) {
     auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::bfloat16_t, vllm_rs_moe::Sm90GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
@@ -686,21 +643,6 @@ extern "C" void moe_fp8_grouped_gemm_bf16(
   }
 #endif
   printf("moe_fp8_grouped_gemm_bf16 unsupported sm_version %d\n", sm_version);
-#else
-  (void)a;
-  (void)b;
-  (void)a_scales;
-  (void)b_scales;
-  (void)expert_offsets;
-  (void)num_experts;
-  (void)n;
-  (void)k;
-  (void)block_size_n;
-  (void)block_size_k;
-  (void)sm_version;
-  (void)out;
-  (void)stream;
-#endif
 }
 
 #endif
