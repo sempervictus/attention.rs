@@ -56,12 +56,12 @@ fn main() -> Result<()> {
 
     if compute_cap >= 121 {
         builder = builder.arg("--gpu-architecture=sm_121");
-        builder = builder.arg("-DENABLE_SM120"); // 121 compatible with 120 features
+        builder = builder.arg("-DENABLE_SM120a"); // 121 compatible with 120 features
     } else if compute_cap >= 120 {
-        builder = builder.arg("--gpu-architecture=sm_120");
+        builder = builder.arg("--gpu-architecture=sm_120a");
         builder = builder.arg("-DENABLE_SM120");
     } else if compute_cap >= 100 {
-        builder = builder.arg("--gpu-architecture=sm_100");
+        builder = builder.arg("--gpu-architecture=sm_100a");
         builder = builder.arg("-DENABLE_SM100");
     } else if compute_cap >= 90 {
         builder = builder.arg("--gpu-architecture=sm_90a");
