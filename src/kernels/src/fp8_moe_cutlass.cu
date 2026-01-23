@@ -608,10 +608,10 @@ extern "C" void moe_fp8_grouped_gemm_f16(
     return;
 #endif
 
-    auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm90GroupConfig, cutlass::layout::RowMajor>(
+    auto status1 = vllm_rs_moe::launch_grouped_gemm<cutlass::half_t, vllm_rs_moe::Sm90GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
-    if (status != cutlass::Status::kSuccess) {
-      printf("moe_fp8_grouped_gemm_f16 sm90 failed: %s\n", cutlassGetStatusString(status));
+    if (status1 != cutlass::Status::kSuccess) {
+      printf("moe_fp8_grouped_gemm_f16 sm90 failed: %s\n", cutlassGetStatusString(status1));
     }
     return;
 #endif
@@ -658,10 +658,10 @@ extern "C" void moe_fp8_grouped_gemm_bf16(
     return;
 #endif
 
-    auto status = vllm_rs_moe::launch_grouped_gemm<cutlass::bfloat16_t, vllm_rs_moe::Sm90GroupConfig, cutlass::layout::RowMajor>(
+    auto status1 = vllm_rs_moe::launch_grouped_gemm<cutlass::bfloat16_t, vllm_rs_moe::Sm90GroupConfig, cutlass::layout::RowMajor>(
         a_ptr, b_ptr, a_scales, b_scales, expert_offsets, num_experts, n, k, n_blocks, k_blocks, out_ptr, stream);
-    if (status != cutlass::Status::kSuccess) {
-      printf("moe_fp8_grouped_gemm_bf16 sm90 failed: %s\n", cutlassGetStatusString(status));
+    if (status1 != cutlass::Status::kSuccess) {
+      printf("moe_fp8_grouped_gemm_bf16 sm90 failed: %s\n", cutlassGetStatusString(status1));
     }
     return;
 #endif
