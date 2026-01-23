@@ -44,21 +44,26 @@ fn main() -> Result<()> {
         .arg("-O3")
         .arg("--use_fast_math");
 
-    let compute_cap = compute_capability()?;
+    let compute_cap = compute_capability().unwrap_or(80);
 
-    if compute_cap < 800 {
+    println!("cargo:info=compute capability: {}", compute_cap);
+
+    if compute_cap < 80 {
         builder = builder.arg("-DNO_BF16_KERNEL");
         builder = builder.arg("-DNO_MARLIN_KERNEL");
         builder = builder.arg("-DNO_HARDWARE_FP8");
     }
 
-    if compute_cap >= 1210 {
+    if compute_cap >= 121 {
         builder = builder.arg("--gpu-architecture=sm_121");
-    } else if compute_cap >= 1200 {
+        builder = builder.arg("-DENABLE_SM120"); // 121 compatible with 120 features
+    } else if compute_cap >= 120 {
         builder = builder.arg("--gpu-architecture=sm_120");
-    } else if compute_cap >= 1000 {
+        builder = builder.arg("-DENABLE_SM120");
+    } else if compute_cap >= 100 {
         builder = builder.arg("--gpu-architecture=sm_100");
-    } else if compute_cap >= 900 {
+        builder = builder.arg("-DENABLE_SM100");
+    } else if compute_cap >= 90 {
         builder = builder.arg("--gpu-architecture=sm_90a");
     }
 
@@ -117,13 +122,6 @@ fn main() -> Result<()> {
 }
 
 fn compute_capability() -> Result<usize> {
-    if let Ok(var) = std::env::var("CUDA_COMPUTE_CAP") {
-        let v = var
-            .parse::<usize>()
-            .context("CUDA_COMPUTE_CAP must be an integer")?;
-        return Ok(v * 10);
-    }
-
     let out = Command::new("nvidia-smi")
         .args(["--query-gpu=compute_cap", "--format=csv"])
         .output()
@@ -138,7 +136,7 @@ fn compute_capability() -> Result<usize> {
         .trim()
         .parse::<f32>()
         .context("failed to parse compute_cap")?;
-    Ok((cap * 100.0) as usize)
+    Ok((cap * 10.0) as usize)
 }
 
 fn resolve_cutlass_dir_by_scanning_checkouts() -> Result<PathBuf> {
