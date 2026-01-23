@@ -124,19 +124,31 @@ fn main() -> Result<()> {
 fn compute_capability() -> Result<usize> {
     let out = Command::new("nvidia-smi")
         .args(["--query-gpu=compute_cap", "--format=csv"])
-        .output()
-        .context("failed to run nvidia-smi; set CUDA_COMPUTE_CAP env var instead")?;
+        .output();
 
-    let output = String::from_utf8(out.stdout).context("nvidia-smi output was not utf8")?;
-    let line = output
-        .lines()
-        .nth(1)
-        .ok_or_else(|| anyhow!("unexpected nvidia-smi output:\n{output}"))?;
-    let cap = line
-        .trim()
-        .parse::<f32>()
-        .context("failed to parse compute_cap")?;
-    Ok((cap * 10.0) as usize)
+    if let Ok(out) = out {
+        let output = String::from_utf8(out.stdout).context("nvidia-smi output was not utf8")?;
+        let line = output
+            .lines()
+            .nth(1)
+            .ok_or_else(|| anyhow!("unexpected nvidia-smi output:\n{output}"))?;
+        let cap = line
+            .trim()
+            .parse::<f32>()
+            .context("failed to parse compute_cap")?;
+        return Ok((cap * 10.0) as usize);
+    }
+
+    if let Ok(var) = std::env::var("CUDA_COMPUTE_CAP") {
+        let v = var
+            .parse::<usize>()
+            .context("CUDA_COMPUTE_CAP must be an integer")?;
+        return Ok(if v >= 100 { v } else { v * 10 });
+    }
+
+    Err(anyhow!(
+        "failed to run nvidia-smi; set CUDA_COMPUTE_CAP env var instead"
+    ))
 }
 
 fn resolve_cutlass_dir_by_scanning_checkouts() -> Result<PathBuf> {
