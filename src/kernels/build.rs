@@ -74,7 +74,7 @@ fn main() -> Result<()> {
 
     println!("cargo:info={builder:?}");
 
-    let _ = builder.build_lib(build_dir.join("libpagedattention.a"));
+    let _ = builder.build_lib(build_dir.join("libpagedattention.a"))?;
 
     println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rustc-link-lib=pagedattention");
