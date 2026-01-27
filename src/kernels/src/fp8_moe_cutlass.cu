@@ -96,6 +96,36 @@ __global__ void gather_rows_kernel(
   }
 }
 
+// Strided gather kernel for column-major scale tensors (SM100+ Blackwell)
+// Source is column-major: elements in each row are strided by src_row_stride
+// Destination is also column-major: elements in each row are strided by dst_row_stride
+template <typename T>
+__global__ void gather_rows_strided_kernel(
+    const T* input,
+    const int32_t* dst2src_map,
+    T* output,
+    int64_t num_src_rows,
+    int64_t num_dst_rows,
+    int64_t num_cols,
+    int64_t src_row_stride,  // Stride between elements in the same row of source
+    int64_t dst_row_stride,  // Stride between elements in the same row of dest
+    int32_t map_divisor) {
+  int64_t dst_row = blockIdx.x;
+  if (dst_row >= num_dst_rows) {
+    return;
+  }
+  int64_t src_row = dst2src_map[dst_row] / map_divisor;
+  if (src_row >= num_src_rows) {
+    return;
+  }
+
+  // For column-major: input[row, col] = input[row + col * src_row_stride]
+  // Copy element by element since rows are not contiguous
+  for (int64_t col = threadIdx.x; col < num_cols; col += blockDim.x) {
+    output[dst_row + col * dst_row_stride] = input[src_row + col * src_row_stride];
+  }
+}
+
 template <typename T>
 __global__ void scatter_rows_kernel(
     const T* input,
@@ -533,6 +563,25 @@ extern "C" void moe_fp8_shuffle_rows_f32(
   dim3 block(256);
   vllm_rs_moe::gather_rows_kernel<float><<<grid, block, 0, stream>>>(
       input, dst2src_map, output, num_src_rows, num_dst_rows, num_cols, map_divisor);
+}
+
+// Strided version for column-major scale tensors (SM100+ Blackwell)
+extern "C" void moe_fp8_shuffle_rows_f32_strided(
+    const float* input,
+    const int32_t* dst2src_map,
+    float* output,
+    int64_t num_src_rows,
+    int64_t num_dst_rows,
+    int64_t num_cols,
+    int64_t src_row_stride,
+    int64_t dst_row_stride,
+    int32_t map_divisor,
+    cudaStream_t stream) {
+  dim3 grid(static_cast<uint32_t>(num_dst_rows));
+  dim3 block(256);
+  vllm_rs_moe::gather_rows_strided_kernel<float><<<grid, block, 0, stream>>>(
+      input, dst2src_map, output, num_src_rows, num_dst_rows, num_cols,
+      src_row_stride, dst_row_stride, map_divisor);
 }
 
 extern "C" void moe_fp8_scatter_rows_f16(

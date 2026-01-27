@@ -301,16 +301,43 @@ pub fn moe_gemm_fp8(
                 let k_blocks = (size_k + block_size_k - 1) / block_size_k;
                 let num_groups_per_row = k_blocks;
                 let num_groups = (input_rows * num_groups_per_row) as i32;
+                
+                // SM100+ (Blackwell) requires column-major scale layout (UMMA::Major::MN)
+                // SM90 (Hopper) requires row-major scale layout (GMMA::Major::K)
+                let is_column_major_scales = sm_version >= 100;
+                
                 let input_q = Tensor::zeros((input_rows, size_k), DType::U8, &device)?;
-                let input_scale = Tensor::zeros((input_rows, k_blocks), DType::F32, &device)?;
+                let input_scale = if is_column_major_scales {
+                    // Column-major: allocate transposed and transpose for column-major view
+                    Tensor::zeros((k_blocks, input_rows), DType::F32, &device)?.t()?
+                } else {
+                    // Row-major: standard contiguous layout
+                    Tensor::zeros((input_rows, k_blocks), DType::F32, &device)?
+                };
                 let rep_a_q = Tensor::zeros((size_m, size_k), DType::U8, &device)?;
-                let rep_a_scales = Tensor::zeros((size_m, k_blocks), DType::F32, &device)?;
+                let rep_a_scales = if is_column_major_scales {
+                    Tensor::zeros((k_blocks, size_m), DType::F32, &device)?.t()?
+                } else {
+                    Tensor::zeros((size_m, k_blocks), DType::F32, &device)?
+                };
                 let rep_out = Tensor::zeros((size_m, size_n), input_dtype, &device)?;
                 let output = Tensor::zeros((size_m, size_n), input_dtype, &device)?;
                 let map_divisor = if topk_weights.is_none() {
                     topk as i32
                 } else {
                     1
+                };
+
+                // Get scale stride for quantization kernel
+                let input_scale_stride = if is_column_major_scales {
+                    input_rows as i32  // Column-major stride
+                } else {
+                    num_groups_per_row as i32  // Row-major stride
+                };
+                let rep_scale_stride = if is_column_major_scales {
+                    size_m as i32
+                } else {
+                    num_groups_per_row as i32
                 };
 
                 let (input_q, _) = input_q.storage_and_layout();
@@ -357,9 +384,9 @@ pub fn moe_gemm_fp8(
                         num_groups as i32,
                         128,
                         num_groups_per_row as i32,
-                        num_groups_per_row as i32,
+                        input_scale_stride,
                         data_type == 0,
-                        false,
+                        is_column_major_scales,
                         stream as i64,
                     );
 
@@ -373,16 +400,34 @@ pub fn moe_gemm_fp8(
                         map_divisor,
                         stream as i64,
                     );
-                    ffi::moe_fp8_shuffle_rows_f32(
-                        *input_scale.device_ptr() as *const f32,
-                        *sorted_token_ids.device_ptr() as *const i32,
-                        *rep_a_scales.device_ptr() as *mut f32,
-                        input_rows as i64,
-                        size_m as i64,
-                        num_groups_per_row as i64,
-                        map_divisor,
-                        stream as i64,
-                    );
+                    
+                    // Use strided shuffle for column-major scales (SM100+ Blackwell)
+                    // or regular shuffle for row-major scales (SM90)
+                    if is_column_major_scales {
+                        ffi::moe_fp8_shuffle_rows_f32_strided(
+                            *input_scale.device_ptr() as *const f32,
+                            *sorted_token_ids.device_ptr() as *const i32,
+                            *rep_a_scales.device_ptr() as *mut f32,
+                            input_rows as i64,
+                            size_m as i64,
+                            num_groups_per_row as i64,
+                            input_rows as i64,    // src_row_stride (column-major)
+                            size_m as i64,        // dst_row_stride (column-major)
+                            map_divisor,
+                            stream as i64,
+                        );
+                    } else {
+                        ffi::moe_fp8_shuffle_rows_f32(
+                            *input_scale.device_ptr() as *const f32,
+                            *sorted_token_ids.device_ptr() as *const i32,
+                            *rep_a_scales.device_ptr() as *mut f32,
+                            input_rows as i64,
+                            size_m as i64,
+                            num_groups_per_row as i64,
+                            map_divisor,
+                            stream as i64,
+                        );
+                    }
 
                     ffi::moe_fp8_calculate_expert_offsets(
                         *experts_ids.device_ptr() as *const i32,
