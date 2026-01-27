@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 
 [build-dependencies]
-cudaforge = { git = "https://github.com/guoqingbao/cudaforge.git", version= "0.1.0", rev = "6c9ce74"}
+cudaforge = { git = "https://github.com/sempervictus/cudaforge.git", branch = "bug/git-contention"}
 anyhow = { version = "1", features = ["backtrace"] }
 
 [features]
