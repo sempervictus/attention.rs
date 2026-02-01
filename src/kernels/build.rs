@@ -34,6 +34,10 @@ fn main() -> Result<()> {
         .source_dir("src")
         .arg("--expt-relaxed-constexpr")
         .arg("-std=c++17")
+        .arg("-fmad=false")       // Disable FMA rounding non-determinism
+        .arg("-ftz=false")        // Preserve subnormals (critical for attention)
+//        .arg("-prec-div")         // Enable precise division
+//        .arg("-prec-sqrt")        // Enable precise square-root
         .arg("-O3");
 
     let compute_cap = builder.get_compute_cap();
@@ -41,9 +45,16 @@ fn main() -> Result<()> {
     println!("cargo:info=compute capability: {:?}", compute_cap);
 
     if compute_cap.unwrap_or(80) < 80 {
+        builder = builder.arg("-Xptxas=-dlcm=ca");
+        builder = builder.arg("-Xptxas=-falignhist=0");
         builder = builder.arg("-DNO_BF16_KERNEL");
         builder = builder.arg("-DNO_MARLIN_KERNEL");
         builder = builder.arg("-DNO_HARDWARE_FP8");
+    }
+
+    if compute_cap.unwrap_or(70) > 79 {
+        builder = builder.arg("-Xptxas=-dlcm=cg");
+        builder = builder.arg("-Xptxas=-maxrregcount=32");
     }
 
     if marlin_disabled {
