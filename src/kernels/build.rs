@@ -45,16 +45,9 @@ fn main() -> Result<()> {
     println!("cargo:info=compute capability: {:?}", compute_cap);
 
     if compute_cap.unwrap_or(80) < 80 {
-        builder = builder.arg("-Xptxas=-dlcm=ca");
-        builder = builder.arg("-Xptxas=-falignhist=0");
         builder = builder.arg("-DNO_BF16_KERNEL");
         builder = builder.arg("-DNO_MARLIN_KERNEL");
         builder = builder.arg("-DNO_HARDWARE_FP8");
-    }
-
-    if compute_cap.unwrap_or(70) > 79 {
-        builder = builder.arg("-Xptxas=-dlcm=cg");
-        builder = builder.arg("-Xptxas=-maxrregcount=32");
     }
 
     if marlin_disabled {
