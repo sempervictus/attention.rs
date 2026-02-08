@@ -74,17 +74,26 @@ fn main() -> Result<()> {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E4M3");
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP4_E2M1");
             }
+            if compute_cap >= 120 {
+                builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E8M0");
+            }
+            if compute_cap == 120 {
+                builder = builder.arg("-FLASHINFER_CUDA_ARCH_LIST=\"12.0f\"");
+            }
+            if compute_cap == 121 {
+                builder = builder.arg("-FLASHINFER_CUDA_ARCH_LIST=\"12.1f\"");
+            }
         }
     }
 
     if std::env::var("CARGO_FEATURE_FLASHINFER").is_ok() {
         println!("cargo:rerun-if-changed=src/flashinfer_adapter.cu");
-        // DO not change this, this featch flashinfer v0.6.2 headers
+        // DO not change this, this featch flashinfer v0.6.3+ headers
         // which is compatible with our code
         builder = builder.arg("-DUSE_FLASHINFER").with_git_dependency(
             "flashinfer",
             "https://github.com/flashinfer-ai/flashinfer.git",
-            "a49b45336e56e4615eae102cf29d5110293d9130", // v0.6.2
+            "99562e5eeaa26b08ba5e514bfe22d84404390ca6", // v0.6.3+
             vec!["include"],
             false,
         );
