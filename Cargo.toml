@@ -4,8 +4,8 @@ version = "0.4.0"
 edition = "2021"
 
 [dependencies]
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "af2ee3d" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "af2ee3d" }
+candle-core = { git = "https://github.com/sempervictus/candle.git", branch = "sm120/cutlass_flashinfer" }
+candle-nn = { git = "https://github.com/sempervictus/candle.git", branch = "sm120/cutlass_flashinfer" }
 candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "af2ee3d", optional = true }
 serde = { version = "1.0.190", features = ["serde_derive"] }
 serde_json = "1.0.108"
