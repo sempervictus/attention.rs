@@ -77,12 +77,6 @@ fn main() -> Result<()> {
             if compute_cap >= 120 {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E8M0");
             }
-            if compute_cap == 120 {
-                builder = builder.arg("-FLASHINFER_CUDA_ARCH_LIST=\"12.0f\"");
-            }
-            if compute_cap == 121 {
-                builder = builder.arg("-FLASHINFER_CUDA_ARCH_LIST=\"12.1f\"");
-            }
         }
     }
 
