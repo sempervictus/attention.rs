@@ -61,9 +61,12 @@ fn main() -> Result<()> {
     if std::env::var("CARGO_FEATURE_CUTLASS").is_ok()
         || std::env::var("CARGO_FEATURE_FLASHINFER").is_ok()
     {
-        builder = builder.arg("-DUSE_CUTLASS").with_cutlass(None);
+        builder = builder.arg("-DUSE_CUTLASS").with_cutlass(Some("6b3e607b852f1543dc21323155a2ad71473c8642"));
 
         if std::env::var("CARGO_FEATURE_FLASHINFER").is_ok() {
+            builder = builder.arg("-DFLASHINFER_ENABLE_F32");
+            builder = builder.arg("-DFLASHINFER_ENABLE_F16");
+            builder = builder.arg("-DFLASHINFER_ENABLE_BF16");
             if compute_cap >= 89 {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E8M0");
             }
@@ -72,10 +75,11 @@ fn main() -> Result<()> {
             }
             if compute_cap >= 90 {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E4M3");
-                builder = builder.arg("-DFLASHINFER_ENABLE_FP4_E2M1");
+                builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E5M2");
             }
             if compute_cap >= 120 {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E8M0");
+                builder = builder.arg("-DFLASHINFER_ENABLE_FP4_E2M1");
             }
         }
     }
