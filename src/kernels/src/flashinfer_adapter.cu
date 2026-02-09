@@ -11,9 +11,14 @@
         #include <flashinfer/attention/default_prefill_params.cuh>
         #include <flashinfer/attention/variants.cuh>
     #else
-        #include <flashinfer/attention/hopper/prefill_sm90.cuh>
-        #include <flashinfer/attention/hopper/variants.cuh>
-        #include <flashinfer/attention/hopper/default_params.cuh>
+        #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+            #include <flashinfer/attention/blackwell/plan.cuh>
+            #include <flashinfer/attention/blackwell/fmha_cutlass_sm100.cuh>
+        #else
+            #include <flashinfer/attention/hopper/prefill_sm90.cuh>
+            #include <flashinfer/attention/hopper/variants.cuh>
+            #include <flashinfer/attention/hopper/default_params.cuh>
+        #endif
         #if !defined(NO_FP8_KVCACHE)
             #include <flashinfer/attention/hopper/quantization/prefill_sm90.cuh>
         #endif
