@@ -12,6 +12,7 @@
         #include <flashinfer/attention/variants.cuh>
     #else
         #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+            #include <flashinfer/attention_impl.cuh>
             #include <flashinfer/attention/blackwell/plan.cuh>
             #include <flashinfer/attention/blackwell/fmha_cutlass_sm100.cuh>
         #else
