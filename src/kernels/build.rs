@@ -68,6 +68,10 @@ fn main() -> Result<()> {
         .nvcc_thread_patterns(&["flash_api", "cutlass", "flashinfer"], 2)
         .arg("--expt-relaxed-constexpr")
         .arg("-std=c++17")
+        .arg("-fmad=false")       // Disable FMA rounding non-determinism
+        .arg("-ftz=false")        // Preserve subnormals (critical for attention)
+        .arg("-prec-div=true")         // Enable precise division
+        .arg("-prec-sqrt=true")        // Enable precise square-root
         .arg("-O3");
 
     if !trtllm_enabled {
