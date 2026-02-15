@@ -96,10 +96,16 @@ fn main() -> Result<()> {
         println!("cargo:rerun-if-changed=src/flashinfer_adapter.cu");
         // DO not change this, this featch custom flashinfer v0.6.2 headers
         // which is compatible with our code (added more gqa group_size)
+        let fi_repo = std::env::var("CARGO_FEATURE_FLASHINFER_REPO").unwrap_or(
+            "https://github.com/guoqingbao/flashinfer.git".to_string()
+        );
+        let fi_commit = std::env::var("CARGO_FEATURE_FLASHINFER_COMMIT").unwrap_or(
+            "35e1a37733b452fe26c2a51ac38fca134b1efaa4".to_string() // v0.6.2
+        );
         builder = builder.arg("-DUSE_FLASHINFER").with_git_dependency(
             "flashinfer",
-            "https://github.com/guoqingbao/flashinfer.git",
-            "35e1a37733b452fe26c2a51ac38fca134b1efaa4", // v0.6.2
+            fi_repo.as_str(),
+            fi_commit.as_str(),
             vec![
                 "include",
                 "include/flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export",
