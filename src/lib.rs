@@ -445,12 +445,21 @@ impl PagedAttention {
                 };
 
                 return if input_metadata.is_prefill && use_trtllm_backend {
-                    let context_lens = input_metadata.context_lens.as_ref().ok_or_else(|| {
-                        candle_core::Error::msg("trtllm prefill requires context_lens")
-                    })?;
                     let cu_q = input_metadata.cu_seqlens_q.as_ref().ok_or_else(|| {
                         candle_core::Error::msg("trtllm prefill requires cu_seqlens_q")
                     })?;
+                    let context_lens = input_metadata.context_lens.as_ref().ok_or_else(|| {
+                        // candle_core::Error::msg("trtllm prefill requires context_lens");
+                        let cu_q_host = cu_q.to_vec1::<u32>().unwrap();
+                        // Derive context_lens from cu_seqlens_q
+                        let context_lens_vec: Vec<u32> = cu_q_host.windows(2)
+                            .map(|w| w[1] - w[0])
+                            .collect();
+                        Tensor::from_vec(
+                            context_lens_vec, (cu_q_host.len() - 1,), &cu_q.device()
+                        ).unwrap()
+                    }).unwrap();
+
                     let (k_in, v_in) = if input_metadata.block_tables.is_some() {
                         (
                             key_cache.as_ref().ok_or_else(|| {
