@@ -404,8 +404,6 @@ pub struct FlashInferDecodeWithPlan {
     pub sm_scale: f32,
     pub plan_info: Vec<i64>, // length 10
     pub enable_cuda_graph: bool,
-    pub window_left: i32,
-    pub logits_soft_cap: f32,
 }
 
 impl candle::CustomOp1 for FlashInferDecodeWithPlan {
@@ -571,8 +569,6 @@ impl FlashInferDecodeWithPlan {
                 ws_int_ptr,
                 WORKSPACE_INT_SIZE,
                 self.plan_info.as_ptr(),
-                self.window_left,
-                self.logits_soft_cap,
                 data_type,
                 out_data_type,
                 *dev.cu_stream() as i64,
@@ -600,8 +596,6 @@ pub fn decode_with_plan(
     sm_scale: f32,
     plan_info: &[i64],
     enable_cuda_graph: bool,
-    window_left: Option<i32>,
-    logits_soft_cap: Option<f32>,
 ) -> Result<Tensor> {
     let op = FlashInferDecodeWithPlan {
         key_cache: key_cache.clone(),
@@ -618,8 +612,6 @@ pub fn decode_with_plan(
         sm_scale,
         plan_info: plan_info.to_vec(),
         enable_cuda_graph,
-        window_left: window_left.unwrap_or(-1),
-        logits_soft_cap: logits_soft_cap.unwrap_or(0.0f32),
     };
     q.apply_op1(op)
 }
@@ -764,8 +756,6 @@ pub struct FlashInferPrefill {
     pub num_kv_heads: usize,
     pub head_dim: usize,
     pub sm_scale: f32,
-    pub window_left: i32,
-    pub logits_soft_cap: f32,
 }
 
 impl candle::CustomOp1 for FlashInferPrefill {
@@ -942,8 +932,6 @@ impl FlashInferPrefill {
                 page_locked_ptr,
                 page_locked_size,
                 false,
-                self.window_left,
-                self.logits_soft_cap,
                 data_type,
                 out_data_type,
                 *dev.cu_stream() as i64,
@@ -1131,8 +1119,6 @@ pub fn prefill(
     num_kv_heads: usize,
     head_dim: usize,
     sm_scale: f32,
-    window_left: Option<i32>,
-    logits_soft_cap: Option<f32>,
 ) -> Result<Tensor> {
     let op = FlashInferPrefill {
         key_cache: key_cache.clone(),
@@ -1153,8 +1139,6 @@ pub fn prefill(
         num_kv_heads,
         head_dim,
         sm_scale,
-        window_left: window_left.unwrap_or(-1),
-        logits_soft_cap: logits_soft_cap.unwrap_or(0.0f32),
     };
     q.apply_op1(op)
 }
