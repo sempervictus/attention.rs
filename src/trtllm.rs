@@ -63,9 +63,16 @@ impl TrtllmDecode {
     ) -> Result<(CudaStorage, candle::Shape)> {
         let dev = q.device();
         let sm = cuda_utils::sm_version(dev).unwrap_or(0);
-        if sm != 100 && sm != 103 {
+
+                if sm < 100  {
+                    candle_core::bail!(
+                        "FLASHINFER_BACKEND=trtllm currently supports only sm100+, got sm{}",
+                        sm
+                    );
+                }
+        if sm < 100 {
             candle::bail!(
-                "trtllm backend currently supports only sm100/sm103, got sm{}",
+                "trtllm backend currently supports only sm100+, got sm{}",
                 sm
             );
         }
@@ -226,9 +233,9 @@ impl TrtllmContext {
     ) -> Result<(CudaStorage, candle::Shape)> {
         let dev = q.device();
         let sm = cuda_utils::sm_version(dev).unwrap_or(0);
-        if sm != 100 && sm != 103 {
+        if sm < 100 {
             candle::bail!(
-                "trtllm backend currently supports only sm100/sm103, got sm{}",
+                "trtllm backend currently supports only sm100+, got sm{}",
                 sm
             );
         }

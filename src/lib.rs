@@ -386,9 +386,9 @@ impl PagedAttention {
                     .as_cuda_device()
                     .map_err(candle_core::Error::wrap)?;
                 let sm = crate::cuda_utils::sm_version(dev).unwrap_or(0);
-                if sm != 100 && sm != 103 {
+                if sm < 100  {
                     candle_core::bail!(
-                        "FLASHINFER_BACKEND=trtllm currently supports only sm100/sm103, got sm{}",
+                        "FLASHINFER_BACKEND=trtllm currently supports only sm100+, got sm{}",
                         sm
                     );
                 }
