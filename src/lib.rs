@@ -455,9 +455,7 @@ impl PagedAttention {
                         let context_lens_vec: Vec<u32> = cu_q_host.windows(2)
                             .map(|w| w[1] - w[0])
                             .collect();
-                        Tensor::from_vec(
-                            context_lens_vec, (cu_q_host.len() - 1,), &cu_q.device()
-                        ).unwrap()
+                        Tensor::new(context_lens_vec, &cu_q.device())
                     }).unwrap();
 
                     let (k_in, v_in) = if input_metadata.block_tables.is_some() {
