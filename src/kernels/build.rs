@@ -82,16 +82,27 @@ fn main() -> Result<()> {
 
         if std::env::var("CARGO_FEATURE_FLASHINFER").is_ok() {
             builder = builder.arg("-DENABLE_BF16").arg("-DENABLE_FP8");
+            if compute_cap == 89 {
+                builder = builder.arg("-gencode=arch=compute_89,code=sm_89");
+            }
             if compute_cap >= 89 {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E8M0");
             }
             if compute_cap == 90 {
                 builder = builder.arg("-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED");
                 builder = builder.arg("-DSM_90_PASS");
+                builder = builder.arg("-gencode=arch=compute_90a,code=sm_90a");
             }
             if compute_cap >= 90 {
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E4M3");
+                builder = builder.arg("-DFLASHINFER_ENABLE_FP8_E5M2");
                 builder = builder.arg("-DFLASHINFER_ENABLE_FP4_E2M1");
+            }
+            if compute_cap == 120 {
+                builder = builder.arg("-gencode=arch=compute_120f,code=sm_120f");
+            }
+            if compute_cap == 121 {
+                builder = builder.arg("-gencode=arch=compute_121a,code=sm_121a");
             }
         }
     }
