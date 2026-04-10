@@ -192,7 +192,7 @@ struct CutlassMxfp4GemmSm120 {
   using MmaTileShape = cute::Shape<cute::Int<CTA_M>, cute::Int<CTA_N>, cute::Int<CTA_K>>;
 
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
-      Arch, cutlass::arch::OpClassTensorOp, MmaTileShape, ClusterShape, EpilogueTileType,
+      Arch, OperatorClass, MmaTileShape, ClusterShape, EpilogueTileType,
       ElementAccumulator, ElementCompute,
       ElementC, LayoutC, AlignmentC,
       OutElementType, LayoutC, AlignmentC,
