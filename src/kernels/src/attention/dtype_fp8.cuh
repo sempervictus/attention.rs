@@ -89,9 +89,10 @@ static inline __device__ uint8_t softmax_float_to_fp8_e4m3(float f) {
 
   // Underflow -> could become subnormal or zero in FP8
   if (new_exp <= 0) {
-    // shift needed to form subnormal in FP8
-    // effective shift: number of bits to right-shift mantissa to align to 3-bit mantissa
-    int shift = (1 - new_exp) + (23 - 3); // (1-new_exp) accounts for denorm scaling
+    // For subnormal FP8 values, we need to shift the mantissa to the right
+    // The exponent is fixed at 0 for subnormals, so we shift by (1 - new_exp) + (23 - 3)
+    // where (1 - new_exp) accounts for the subnormal exponent scaling
+    int shift = (1 - new_exp) + (23 - 3);
     if (shift >= 32) {
       // too small -> underflow to zero
       return (uint8_t)(sign << 7);
@@ -168,18 +169,24 @@ static inline __device__ float softmax_fp8_to_float_e4m3(uint8_t x) {
       uint32_t bits = (sign << 31);
       return __uint_as_float(bits);
     } else {
-      // subnormal: value = (-1)^s * 2^(1-bias8 - (mantissa bits)) * (mant / 2^3)
-      // We'll reconstruct as float by shifting mant into float mantissa position
-      // compute exponent for float
-      int e = (1 - FP8_BIAS) + FP32_BIAS; // unbiased exponent + fp32 bias
+      // subnormal FP8: value = (-1)^s * 2^(-6) * (mant / 8)
+      // This maps to normalized FP32 with exponent = 127 - 6 = 121
+      int e = FP32_BIAS - 6; // subnormal FP8 maps to normalized FP32
       uint32_t mant32 = (uint32_t)mant << (23 - 3);
       uint32_t bits = (sign << 31) | ((uint32_t)e << 23) | mant32;
       return __uint_as_float(bits);
     }
-  } else if (exp == 0xF && mant == 0x7) {
-    // NaN - produce a quiet NaN
-    uint32_t bits = (0u << 31) | (0xFFu << 23) | (1u << 22);
-    return __uint_as_float(bits);
+  } else if (exp == 0xF) {
+    // NaN or Inf handling
+    if (mant == 0x7) {
+      // NaN - produce a quiet NaN
+      uint32_t bits = (0u << 31) | (0xFFu << 23) | (1u << 22);
+      return __uint_as_float(bits);
+    } else {
+      // Clamp other 111 patterns to max finite
+      uint32_t bits = (sign << 31) | (0xFEu << 23) | 0x7FFFFFu;
+      return __uint_as_float(bits);
+    }
   } else {
     int new_exp = exp - FP8_BIAS + FP32_BIAS;
     uint32_t mant32 = (uint32_t)mant << (23 - 3);
