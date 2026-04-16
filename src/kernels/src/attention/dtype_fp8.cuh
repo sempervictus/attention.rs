@@ -168,10 +168,10 @@ static inline __device__ float softmax_fp8_to_float_e4m3(uint8_t x) {
       uint32_t bits = (sign << 31);
       return __uint_as_float(bits);
     } else {
-      // subnormal: value = (-1)^s * 2^(1-bias8 - (mantissa bits)) * (mant / 2^3)
+      // subnormal: value = (-1)^s * 2^(mant-bias8 - (mantissa bits)) * (mant / 2^3)
       // We'll reconstruct as float by shifting mant into float mantissa position
       // compute exponent for float
-      int e = (1 - FP8_BIAS) + FP32_BIAS; // unbiased exponent + fp32 bias
+      int e = (mant - FP8_BIAS) + FP32_BIAS; // FIX: use mantissa value, not constant 1
       uint32_t mant32 = (uint32_t)mant << (23 - 3);
       uint32_t bits = (sign << 31) | ((uint32_t)e << 23) | mant32;
       return __uint_as_float(bits);
