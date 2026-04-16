@@ -584,6 +584,80 @@ template <
     typename ScalesPerTile,
     int TileSizeM_ = 128,
     class ClusterShape = Shape<_1, _1, _1>>
+void launch_sm100_fp8_blockwise_scaled_mm(
+    OutType* out,
+    const cutlass::float_e4m3_t* a,
+    const cutlass::float_e4m3_t* b,
+    float* scales_a,
+    float* scales_b,
+    int m,
+    int n,
+    int k,
+    void* workspace, size_t workspace_bytes,
+    cudaStream_t stream);
+
+template <typename OutType>
+void sm100_fp8_blockwise_dispatch_shape(
+    OutType* out,
+    const cutlass::float_e4m3_t* a,
+    const cutlass::float_e4m3_t* b,
+    float* scales_a,
+    float* scales_b,
+    int m,
+    int n,
+    int k,
+    void* workspace, size_t workspace_bytes,
+    cudaStream_t stream);
+
+// SM120-specific implementations
+// SM120 uses f8f6f4.mma (NOT tcgen05), has 99KB shared memory limit, NO TMEM
+
+template <
+    typename OutType,
+    typename MmaTileShape,
+    typename PerSmTileShape,
+    typename EpilogueTileShape,
+    typename ScalesPerTile,
+    int TileSizeM_ = 128,
+    class ClusterShape = Shape<_1, _1, _1>>
+void launch_sm120_fp8_blockwise_scaled_mm(
+    OutType* out,
+    const cutlass::float_e4m3_t* a,
+    const cutlass::float_e4m3_t* b,
+    float* scales_a,
+    float* scales_b,
+    int m,
+    int n,
+    int k,
+    void* workspace, size_t workspace_bytes,
+    cudaStream_t stream);
+
+template <typename OutType>
+void sm120_fp8_blockwise_dispatch_shape(
+    OutType* out,
+    const cutlass::float_e4m3_t* a,
+    const cutlass::float_e4m3_t* b,
+    float* scales_a,
+    float* scales_b,
+    int m,
+    int n,
+    int k,
+    void* workspace, size_t workspace_bytes,
+    cudaStream_t stream);
+
+// ============================================================================
+// SM120 FP8 GEMM Implementation
+// SM120 uses f8f6f4.mma (NOT tcgen05), has 99KB shared memory limit, NO TMEM
+// ============================================================================
+
+template <
+    typename OutType,
+    typename MmaTileShape,
+    typename PerSmTileShape,
+    typename EpilogueTileShape,
+    typename ScalesPerTile,
+    int TileSizeM_ = 128,
+    class ClusterShape = Shape<_1, _1, _1>>
 void launch_sm120_fp8_blockwise_scaled_mm(
     OutType* out,
     const cutlass::float_e4m3_t* a,
@@ -784,6 +858,7 @@ extern "C" void fp8_matmul_bf16_cutlass(const uint8_t* input_q,
             out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, workspace, ws_bytes, stream);
         return;
     }
+
     if (sm_version >= 100) {
         sm100_fp8_blockwise_dispatch_shape<cutlass::bfloat16_t>(
             out_ptr, a_ptr, b_ptr, a_scales, b_scales, M, N, K, workspace, ws_bytes, stream);
