@@ -582,8 +582,8 @@ template <
     typename PerSmTileShape,
     typename EpilogueTileShape,
     typename ScalesPerTile,
-    int TileSizeM_ = 128,
-    class ClusterShape = Shape<_1, _1, _1>>
+    int TileSizeM_,
+    class ClusterShape>
 void launch_sm100_fp8_blockwise_scaled_mm(
     OutType* out,
     const cutlass::float_e4m3_t* a,
@@ -618,8 +618,8 @@ template <
     typename PerSmTileShape,
     typename EpilogueTileShape,
     typename ScalesPerTile,
-    int TileSizeM_ = 128,
-    class ClusterShape = Shape<_1, _1, _1>>
+    int TileSizeM_,
+    class ClusterShape>
 void launch_sm120_fp8_blockwise_scaled_mm(
     OutType* out,
     const cutlass::float_e4m3_t* a,
@@ -656,8 +656,8 @@ template <
     typename PerSmTileShape,
     typename EpilogueTileShape,
     typename ScalesPerTile,
-    int TileSizeM_ = 128,
-    class ClusterShape = Shape<_1, _1, _1>>
+    int TileSizeM_,
+    class ClusterShape>
 void launch_sm120_fp8_blockwise_scaled_mm(
     OutType* out,
     const cutlass::float_e4m3_t* a,
@@ -701,8 +701,9 @@ void launch_sm120_fp8_blockwise_scaled_mm(
       ScaleGranularityK,
       cute::UMMA::Major::MN,
       cute::UMMA::Major::K>;
-  using LayoutSFA = decltype(ScaleConfig::deduce_layoutSFA());
-  using LayoutSFB = decltype(ScaleConfig::deduce_layoutSFB());
+  // SM120 manual layouts (no padding, independent of problem size)
+  using LayoutSFA = cutlass::layout::RowMajor;
+  using LayoutSFB = cutlass::layout::ColumnMajor;
 
   using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
       ArchTag,
@@ -732,8 +733,8 @@ void launch_sm120_fp8_blockwise_scaled_mm(
       ElementAccumulator,
       MmaTileShape,
       ClusterShape,
-      cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(
-          sizeof(typename CollectiveEpilogue::SharedStorage))>,
+      // SM120 explicit 3 stages for optimal pipeline utilization
+      cutlass::gemm::collective::StageCount<3>,
       cutlass::gemm::collective::KernelScheduleAuto>::CollectiveOp;
 
   using GemmKernel = cutlass::gemm::kernel::GemmUniversal<
@@ -750,8 +751,9 @@ void launch_sm120_fp8_blockwise_scaled_mm(
   StrideA stride_a = cutlass::make_cute_packed_stride(StrideA{}, cute::make_shape(m, k, 1));
   StrideB stride_b = cutlass::make_cute_packed_stride(StrideB{}, cute::make_shape(n, k, 1));
   StrideC stride_c = cutlass::make_cute_packed_stride(StrideC{}, cute::make_shape(m, n, 1));
-  LayoutSFA layout_SFA = ScaleConfig::tile_atom_to_shape_SFA(make_shape(m, n, k, 1));
-  LayoutSFB layout_SFB = ScaleConfig::tile_atom_to_shape_SFB(make_shape(m, n, k, 1));
+  // SM120 manual layouts (no padding, independent of problem size)
+  LayoutSFA layout_SFA = LayoutSFA{};
+  LayoutSFB layout_SFB = LayoutSFB{};
 
   typename GemmKernel::MainloopArguments mainloop_args{
       a, stride_a, b, stride_b, scales_a, layout_SFA, scales_b, layout_SFB};
@@ -774,22 +776,34 @@ void launch_sm120_fp8_blockwise_scaled_mm(
 
 template <typename OutType>
 void sm120_fp8_blockwise_dispatch_shape(
-    OutType* out,
-    const cutlass::float_e4m3_t* a,
-    const cutlass::float_e4m3_t* b,
-    float* scales_a,
-    float* scales_b,
-    int m,
-    int n,
-    int k,
-    void* workspace, size_t workspace_bytes,
-    cudaStream_t stream) {
-  using MmaTileShape = Shape<_128, _128, _128>;
-  using PerSmTileShape = Shape<_128, _128, _128>;
-  using EpilogueTileShape = Shape<_128, _64>;
-  using ScalesPerTile = Shape<_128, _1, _1>;
-  launch_sm120_fp8_blockwise_scaled_mm<OutType, MmaTileShape, PerSmTileShape, EpilogueTileShape, ScalesPerTile>(
-      out, a, b, scales_a, scales_b, m, n, k, workspace, workspace_bytes, stream);
+   OutType* out,
+   const cutlass::float_e4m3_t* a,
+   const cutlass::float_e4m3_t* b,
+   float* scales_a,
+   float* scales_b,
+   int m,
+   int n,
+   int k,
+   void* workspace, size_t workspace_bytes,
+   cudaStream_t stream) {
+ // SM120 adaptive tile selection based on M dimension
+ // Small M (<=64): use 64x128x128 tiles to fit in 99KB shared memory limit
+ // Medium/Large M (>64): use 128x128x128 tiles for optimal throughput
+ if (m <= 64) {
+   using MmaTileShape = Shape<_64, _128, _128>;
+   using PerSmTileShape = Shape<_64, _128, _128>;
+   using EpilogueTileShape = Shape<_64, _64>;
+   using ScalesPerTile = Shape<_64, _1, _1>;
+   launch_sm120_fp8_blockwise_scaled_mm<OutType, MmaTileShape, PerSmTileShape, EpilogueTileShape, ScalesPerTile>(
+       out, a, b, scales_a, scales_b, m, n, k, workspace, workspace_bytes, stream);
+ } else {
+   using MmaTileShape = Shape<_128, _128, _128>;
+   using PerSmTileShape = Shape<_128, _128, _128>;
+   using EpilogueTileShape = Shape<_128, _64>;
+   using ScalesPerTile = Shape<_128, _1, _1>;
+   launch_sm120_fp8_blockwise_scaled_mm<OutType, MmaTileShape, PerSmTileShape, EpilogueTileShape, ScalesPerTile>(
+       out, a, b, scales_a, scales_b, m, n, k, workspace, workspace_bytes, stream);
+ }
 }
 
 #endif
