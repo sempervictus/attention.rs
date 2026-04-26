@@ -75,7 +75,7 @@ pub fn swizzle_nvfp4_weight_scales(scale: &Tensor, n: usize, k: usize) -> Result
 
             // For SM70 and below, use 16-byte alignment instead of 128-byte
             // to ensure proper CUDA memory alignment
-            let sm = crate::cuda_utils::sm_version(dev).unwrap_or(0);
+            let sm = crate::cuda_utils::sm_version(cuda_dev).unwrap_or(0) as usize;
             let n_padded = if sm >= 100 {
                 pad_to(n, 128)
             } else {
@@ -239,7 +239,7 @@ pub fn nvfp4_matmul(
 
                     // For SM70 and below, use 16-byte alignment instead of 128-byte
                     // to ensure proper CUDA memory alignment
-                    let sm = crate::cuda_utils::sm_version(dev).unwrap_or(0);
+                    let sm = crate::cuda_utils::sm_version(cuda_dev).unwrap_or(0) as usize;
                     let n_padded = if sm >= 100 {
                         pad_to(n, 128)
                     } else {
