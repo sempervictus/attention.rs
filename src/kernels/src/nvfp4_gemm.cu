@@ -493,10 +493,9 @@ __global__ void nvfp4_matmul_tiled(const T *__restrict__ input,
                                                    k_tile / NVFP4_BLOCK_SIZE])) *
             weight_global_scale;
 
-        // Store scale for this k-tile (one scale per 16-element block)
-        int scale_idx = (k_tile + tid) / NVFP4_BLOCK_SIZE;
-        if (scale_idx < K / NVFP4_BLOCK_SIZE) {
-          s_scale[scale_idx] = raw_scale;
+        // Store scale for this k-tile
+        if (ln == 0) {
+          s_scale[k_tile / BLOCK_K] = raw_scale;
         }
 
         uint2 w_vec = load_uint2_safe(
@@ -535,19 +534,20 @@ __global__ void nvfp4_matmul_tiled(const T *__restrict__ input,
       for (int j = 0; j < TN; j++)
         b_frag[j] = s_weight[threadIdx.x * TN + j][k];
       
-      // Fetch scale for this specific k position
-      int global_k = k_tile + k;
-      float block_scale = fp8_scale_to_float(
-          __ldg(&weight_scale[(size_t)(bx * BLOCK_N + threadIdx.x * TN) * scale_stride +
-                             global_k / NVFP4_BLOCK_SIZE])) *
-          weight_global_scale;
-      
 #pragma unroll
       for (int i = 0; i < TM; i++)
 #pragma unroll
         for (int j = 0; j < TN; j++)
-          acc[i][j] = fmaf(a_frag[i], b_frag[j] * block_scale, acc[i][j]);
+          acc[i][j] = fmaf(a_frag[i], b_frag[j], acc[i][j]);
     }
+    
+    // Apply scale once per k-tile after accumulation
+    float tile_scale = s_scale[k_tile / BLOCK_K];
+#pragma unroll
+    for (int i = 0; i < TM; i++)
+#pragma unroll
+      for (int j = 0; j < TN; j++)
+        acc[i][j] *= tile_scale;
     __syncthreads();
   }
 
