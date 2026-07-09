@@ -503,15 +503,15 @@ __global__ void nvfp4_matmul_tiled(const T *__restrict__ input,
 
 #ifdef NVFP4_HW_DEQUANT
         if (!force_lut) {
-          // Store UNSCALED weights; scale applied during accumulation
+          // Store UNSCALED weights for hardware path; scale applied during accumulation
           hw_dequant_16_unscaled(w_vec, &s_weight[ln][0]);
         } else
 #endif
         {
-          // Store UNSCALED weights; scale applied during accumulation
-          dequant_store_8_unscaled(w_vec.x, LUT0, LUT1, LUT2, LUT3,
+          float lut_scale = raw_scale * 0.5f;
+          dequant_store_8(w_vec.x, lut_scale, LUT0, LUT1, LUT2, LUT3,
                           &s_weight[ln][0]);
-          dequant_store_8_unscaled(w_vec.y, LUT0, LUT1, LUT2, LUT3,
+          dequant_store_8(w_vec.y, lut_scale, LUT0, LUT1, LUT2, LUT3,
                           &s_weight[ln][8]);
         }
       } else {
@@ -533,21 +533,12 @@ __global__ void nvfp4_matmul_tiled(const T *__restrict__ input,
 #pragma unroll
       for (int j = 0; j < TN; j++)
         b_frag[j] = s_weight[threadIdx.x * TN + j][k];
-      
 #pragma unroll
       for (int i = 0; i < TM; i++)
 #pragma unroll
         for (int j = 0; j < TN; j++)
           acc[i][j] = fmaf(a_frag[i], b_frag[j], acc[i][j]);
     }
-    
-    // Apply scale once per k-tile after accumulation
-    float tile_scale = s_scale[k_tile / BLOCK_K];
-#pragma unroll
-    for (int i = 0; i < TM; i++)
-#pragma unroll
-      for (int j = 0; j < TN; j++)
-        acc[i][j] *= tile_scale;
     __syncthreads();
   }
 
