@@ -939,6 +939,7 @@ impl PagedAttention {
                             self.v_scale.as_ref(),
                             &slot_mapping,
                         )?;
+
                         if let Some(r) = with_turboquant_layer(self.layer_idx, |tq, _| {
                             crate::flash::flash_tq_store_k8v4(
                                 &key_p,
@@ -952,9 +953,11 @@ impl PagedAttention {
                         }) {
                             r?;
                         }
+
                     }
                     Some(TurboquantMode::Turbo4) => {
                         // Turbo4: both K and V stored ONLY in TQ buffers (no standard cache)
+
                         if let Some(r) = with_turboquant_layer(self.layer_idx, |tq, _| {
                             crate::flash::flash_tq4_store(
                                 &key_p,
@@ -971,9 +974,11 @@ impl PagedAttention {
                         }) {
                             r?;
                         }
+
                     }
                     Some(TurboquantMode::Turbo3) => {
                         // Turbo3: both K and V stored ONLY in TQ buffers (no standard cache)
+
                         if let Some(r) = with_turboquant_layer(self.layer_idx, |tq, _| {
                             crate::flash::flash_tq3_store(
                                 &key_p,
@@ -990,6 +995,7 @@ impl PagedAttention {
                         }) {
                             r?;
                         }
+
                     }
                     None => {
                         crate::flash::flash_reshape_and_cache(
@@ -1022,6 +1028,7 @@ impl PagedAttention {
             if input_metadata.is_prefill {
                 match tq_mode {
                     Some(TurboquantMode::Turbo4) => {
+
                         let r = with_turboquant_layer(self.layer_idx, |tq, _| {
                             crate::flash::flash_tq4_prefill(
                                 &query_p,
@@ -1045,8 +1052,10 @@ impl PagedAttention {
                         if let Some(r) = r {
                             return r;
                         }
+
                     }
                     Some(TurboquantMode::Turbo3) => {
+
                         let r = with_turboquant_layer(self.layer_idx, |tq, _| {
                             crate::flash::flash_tq3_prefill(
                                 &query_p,
@@ -1070,6 +1079,7 @@ impl PagedAttention {
                         if let Some(r) = r {
                             return r;
                         }
+
                     }
                     _ => {
                         return crate::flash::flash_prefill(
@@ -1110,6 +1120,7 @@ impl PagedAttention {
 
             match tq_mode {
                 Some(TurboquantMode::Turbo8) => {
+
                     let ws = self.flash_splitk_workspace.get_or_init(|| {
                         let max_seqs = 64;
                         let num_splits = crate::flash::TQ_NUM_SPLITS as usize;
@@ -1143,8 +1154,10 @@ impl PagedAttention {
                     }) {
                         return r;
                     }
+
                 }
                 Some(TurboquantMode::Turbo4) => {
+
                     let ws = self.flash_splitk_workspace.get_or_init(|| {
                         let max_seqs = 64;
                         let num_splits = crate::flash::TQ_NUM_SPLITS as usize;
@@ -1178,8 +1191,10 @@ impl PagedAttention {
                     }) {
                         return r;
                     }
+
                 }
                 Some(TurboquantMode::Turbo3) => {
+
                     let ws = self.flash_splitk_workspace.get_or_init(|| {
                         let max_seqs = 64;
                         let num_splits = crate::flash::TQ_NUM_SPLITS as usize;

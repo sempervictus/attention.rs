@@ -3241,6 +3241,170 @@ extern "C" {
         stream: i64,
     );
 
+    // =========================================================================
+    // SM120 Blackwell Optimized Flash Kernels
+    // =========================================================================
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_prefill_sm120_fp4(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        o: *mut c_void,
+        block_tables: *const c_int,
+        block_table_stride: u32,
+        cu_seqlens_q: *const u32,
+        context_lens: *const u32,
+        num_seqs: u32,
+        max_q_len: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        cache_block_size: u32,
+        sliding_window: u32,
+        causal: u32,
+        inv_sqrt_d: f32,
+        softcap: f32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_prefill_sm120_fp8(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        o: *mut c_void,
+        block_tables: *const c_int,
+        block_table_stride: u32,
+        cu_seqlens_q: *const u32,
+        context_lens: *const u32,
+        num_seqs: u32,
+        max_q_len: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        cache_block_size: u32,
+        sliding_window: u32,
+        causal: u32,
+        inv_sqrt_d: f32,
+        softcap: f32,
+        k_scale_ptr: *const f32,
+        v_scale_ptr: *const f32,
+        fp8_cache_stride: u64,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_decode_sm120_fp4(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        o: *mut c_void,
+        block_tables: *const c_int,
+        seq_lens: *const c_int,
+        max_blocks_per_seq: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        block_size: u32,
+        inv_sqrt_d: f32,
+        num_seqs: u32,
+        q_stride: u32,
+        sliding_window: u32,
+        softcap: f32,
+        k_scale_ptr: *const f32,
+        v_scale_ptr: *const f32,
+        gqa_ratio: u32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_decode_sm120_fp8(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        o: *mut c_void,
+        block_tables: *const c_int,
+        seq_lens: *const c_int,
+        max_blocks_per_seq: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        block_size: u32,
+        inv_sqrt_d: f32,
+        num_seqs: u32,
+        q_stride: u32,
+        sliding_window: u32,
+        softcap: f32,
+        k_scale_ptr: *const f32,
+        v_scale_ptr: *const f32,
+        fp8_cache_stride: u64,
+        gqa_ratio: u32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_decode_sm120_splitk_fp4(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        workspace: *mut c_void,
+        block_tables: *const c_int,
+        seq_lens: *const c_int,
+        max_blocks_per_seq: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        block_size: u32,
+        inv_sqrt_d: f32,
+        num_seqs: u32,
+        num_splits: u32,
+        q_stride: u32,
+        softcap: f32,
+        k_scale_ptr: *const f32,
+        v_scale_ptr: *const f32,
+        sliding_window: u32,
+        gqa_ratio: u32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_decode_sm120_splitk_fp8(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        workspace: *mut c_void,
+        block_tables: *const c_int,
+        seq_lens: *const c_int,
+        max_blocks_per_seq: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        block_size: u32,
+        inv_sqrt_d: f32,
+        num_seqs: u32,
+        num_splits: u32,
+        q_stride: u32,
+        softcap: f32,
+        k_scale_ptr: *const f32,
+        v_scale_ptr: *const f32,
+        fp8_cache_stride: u64,
+        sliding_window: u32,
+        gqa_ratio: u32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_decode_sm120_reduce(
+        workspace: *const c_void,
+        o: *mut c_void,
+        num_q_heads: u32,
+        head_dim: u32,
+        num_splits: u32,
+        num_seqs: u32,
+        stream: i64,
+    );
+
     #[cfg(feature = "flash")]
     pub fn call_flash_tq_store_k8v4(
         key: *const c_void,
@@ -3825,4 +3989,174 @@ extern "C" {
         stream: i64,
     ) -> c_int;
 
+    // ============================================================================
+    // TURBOQUANT FFI DECLARATIONS
+    // ============================================================================
+
+    /// TurboQuant 4-bit prefill kernel
+    pub fn launch_flash_tq4_prefill(
+        Q: *const f32,
+        K_quant: *const u8,
+        K_absmax: *const f32,
+        V_quant: *const u8,
+        V_absmax: *const f32,
+        block_tables: *const c_int,
+        context_lens: *const c_int,
+        O: *mut f32,
+        batch_size: c_int,
+        seq_len: c_int,
+        num_heads: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        scale: f32,
+        softcap: f32,
+        sliding_window: c_int,
+        block_size: c_int,
+        cu_seqlens_q: *const u32,
+        max_seqlen_q: c_int,
+        stream: i64,
+    );
+
+    /// TurboQuant 3-bit prefill kernel
+    pub fn launch_flash_tq3_prefill(
+        Q: *const f32,
+        K_quant: *const u8,
+        K_absmax: *const f32,
+        V_quant: *const u8,
+        V_absmax: *const f32,
+        block_tables: *const c_int,
+        context_lens: *const c_int,
+        O: *mut f32,
+        batch_size: c_int,
+        seq_len: c_int,
+        num_heads: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        scale: f32,
+        softcap: f32,
+        sliding_window: c_int,
+        block_size: c_int,
+        cu_seqlens_q: *const u32,
+        max_seqlen_q: c_int,
+        stream: i64,
+    );
+
+    /// TurboQuant 4-bit decode kernel
+    pub fn launch_flash_tq4_decode(
+        Q: *const f32,
+        K_quant: *const u8,
+        K_absmax: *const f32,
+        V_quant: *const u8,
+        V_absmax: *const f32,
+        block_tables: *const c_int,
+        context_lens: *const c_int,
+        O: *mut f32,
+        num_seqs: c_int,
+        num_heads: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        block_size: c_int,
+        scale: f32,
+        softcap: f32,
+        sliding_window: c_int,
+        max_context_len: c_int,
+        workspace: *mut f32,
+        stream: i64,
+    );
+
+    /// TurboQuant 3-bit decode kernel
+    pub fn launch_flash_tq3_decode(
+        Q: *const f32,
+        K_quant: *const u8,
+        K_absmax: *const f32,
+        V_quant: *const u8,
+        V_absmax: *const f32,
+        block_tables: *const c_int,
+        context_lens: *const c_int,
+        O: *mut f32,
+        num_seqs: c_int,
+        num_heads: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        block_size: c_int,
+        scale: f32,
+        softcap: f32,
+        sliding_window: c_int,
+        max_context_len: c_int,
+        workspace: *mut f32,
+        stream: i64,
+    );
+
+    /// TurboQuant K8V4 split-K decode kernel
+    pub fn launch_flash_tq_decode_k8v4_splitk(
+        Q: *const f32,
+        K_quant: *const u8,
+        K_absmax: *const f32,
+        V_quant: *const u8,
+        V_absmax: *const f32,
+        block_tables: *const c_int,
+        context_lens: *const c_int,
+        O: *mut f32,
+        num_seqs: c_int,
+        num_heads: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        block_size: c_int,
+        scale: f32,
+        softcap: f32,
+        sliding_window: c_int,
+        max_context_len: c_int,
+        workspace: *mut f32,
+        num_splits: c_int,
+        stream: i64,
+    );
+
+    /// TurboQuant K8V4 store kernel
+    pub fn launch_flash_tq_store_k8v4(
+        K: *const f32,
+        V: *const f32,
+        K_quant: *mut u8,
+        V_quant: *mut u8,
+        K_absmax: *mut f32,
+        V_absmax: *mut f32,
+        slot_mapping: *const c_int,
+        num_tokens: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        k_scale: *mut f32,
+        v_scale: *mut f32,
+        stream: i64,
+    );
+
+    /// TurboQuant 4-bit store kernel
+    pub fn launch_flash_tq4_store(
+        K: *const f32,
+        V: *const f32,
+        K_quant: *mut u8,
+        V_quant: *mut u8,
+        K_absmax: *mut f32,
+        V_absmax: *mut f32,
+        slot_mapping: *const c_int,
+        num_tokens: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        block_size: c_int,
+        stream: i64,
+    );
+
+    /// TurboQuant 3-bit store kernel
+    pub fn launch_flash_tq3_store(
+        K: *const f32,
+        V: *const f32,
+        K_quant: *mut u8,
+        V_quant: *mut u8,
+        K_absmax: *mut f32,
+        V_absmax: *mut f32,
+        slot_mapping: *const c_int,
+        num_tokens: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        block_size: c_int,
+        stream: i64,
+    );
 }
