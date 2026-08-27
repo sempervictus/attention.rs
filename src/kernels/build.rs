@@ -176,7 +176,7 @@ fn main() -> Result<()> {
     {
         builder = builder
             .arg("-DUSE_CUTLASS")
-            .with_cutlass(Some("b46b16d003484063bca4ed365e44095c4c6ed633"));
+            .with_cutlass(Some("cb4247394dd82148787aed73e5dc7cef33cbf862")); // CUTLASS 4.7.1 (SM120 PDL + correctness fixes)
 
         if compute_cap >= 100 {
             builder = builder
