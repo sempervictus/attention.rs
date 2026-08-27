@@ -682,11 +682,10 @@ static int run_fp4_moe_grouped_gemm_sm120(
     return -1;
   }
 
-  // Keep programmatic dependent launch disabled for SM120 grouped NVFP4
-  // MoE as well.  The reference grouped implementation does not enable PDL
-  // for this path until the CUTLASS grouped scheduler is validated with
-  // irregular expert sizes.
-  status = gemm_op.run(args, gemm_workspace, stream, nullptr, /*launch_with_pdl=*/false);
+// Enable programmatic dependent launch for the SM120 grouped NVFP4 MoE GEMM:
+  // CUTLASS 4.7.1 fixed the grouped-GEMM PDL path (memory-fence + swizzle fixes),
+  // so PDL can now overlap the expert GEMM launches.
+  status = gemm_op.run(args, gemm_workspace, stream, nullptr, /*launch_with_pdl=*/true);
   if (status != cutlass::Status::kSuccess) {
     fprintf(stderr, "[NVFP4 MoE CUTLASS SM120] run failed: %s\n",
             cutlass::cutlassGetStatusString(status));
