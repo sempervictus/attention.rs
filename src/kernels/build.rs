@@ -230,12 +230,12 @@ fn main() -> Result<()> {
         println!("cargo:rerun-if-changed=src/flashinfer_adapter_prefill.cu");
         println!("cargo:rerun-if-changed=src/flashinfer_prefill_fp8_fa2.cu");
         println!("cargo:rerun-if-changed=src/flashinfer_mla.cu");
-        // guoqingbao/flashinfer upstream branch: official DSV4 sparse MLA + GQA/FP8 patches
-        // Pin: github/upstream @ 0f06c230 (DSV4 sparse + GQA patches + fastdiv/flat compat)
+        // flashinfer upstream: latest SM120 kernels (SM120a CuTe-DSL prefill, XQA decode,
+        // NVFP4 attention, MoE). Pin: upstream @ 286eee4e (2026-08-27).
         builder = builder.arg("-DUSE_FLASHINFER").with_git_dependency(
             "flashinfer",
-            "https://github.com/guoqingbao/flashinfer.git",
-            "0f06c2305a276bcb704277705b32025575cb567f", // upstream + fastdiv/flat compat
+            "https://github.com/flashinfer-ai/flashinfer.git",
+            "286eee4e2999a825716eab68e597cb1ee0881e1b", // upstream @ 2026-08-27
             vec![
                 "include",
                 "include/flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export",
