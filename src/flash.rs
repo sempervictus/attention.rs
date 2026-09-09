@@ -805,6 +805,8 @@ pub fn flash_tq4_store(
     num_kv_heads: usize,
     head_dim: usize,
     block_size: usize,
+    c_k: f32,
+    c_v: f32,
 ) -> Result<()> {
     let dev = match key.device() {
         candle::Device::Cuda(d) => d,
@@ -843,6 +845,8 @@ pub fn flash_tq4_store(
             num_kv_heads as u32,
             head_dim as u32,
             block_size as u32,
+            c_k,
+            c_v,
             flash_dtype,
             stream,
         );

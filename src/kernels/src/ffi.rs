@@ -3672,6 +3672,8 @@ extern "C" {
         num_kv_heads: u32,
         head_dim: u32,
         block_size: u32,
+        c_k: f32,
+        c_v: f32,
         dtype: i32,
         stream: i64,
     );

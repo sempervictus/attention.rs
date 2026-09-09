@@ -930,6 +930,7 @@ extern "C" void call_flash_tq4_store(
     const long long* slot_mapping,
     unsigned int num_tokens, unsigned int num_kv_heads,
     unsigned int head_dim, unsigned int block_size,
+    float c_k, float c_v,
     int dtype, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
@@ -941,7 +942,7 @@ extern "C" void call_flash_tq4_store(
                 (const HALF*)K, (const HALF*)V, \
                 (float*)K_absmax, (unsigned char*)K_quant, \
                 (float*)V_absmax, (unsigned char*)V_quant, \
-                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size)
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size, c_k, c_v)
         if (head_dim <= 128) { LAUNCH_STORE(128); }
         else if (head_dim <= 256) { LAUNCH_STORE(256); }
         else { LAUNCH_STORE(512); }
@@ -957,7 +958,7 @@ extern "C" void call_flash_tq4_store(
                 (const HALF*)K, (const HALF*)V, \
                 (float*)K_absmax, (unsigned char*)K_quant, \
                 (float*)V_absmax, (unsigned char*)V_quant, \
-                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size)
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size, c_k, c_v)
         if (head_dim <= 128) { LAUNCH_STORE(128); }
         else if (head_dim <= 256) { LAUNCH_STORE(256); }
         else { LAUNCH_STORE(512); }
