@@ -54,6 +54,9 @@ pub mod swiglu;
 #[cfg(feature = "flash")]
 pub mod flash;
 
+#[cfg(all(test, feature = "cuda", feature = "flash"))]
+mod tq4_c_tests;
+
 #[cfg(feature = "metal-flash")]
 pub mod metal_flash;
 
@@ -1011,6 +1014,8 @@ impl PagedAttention {
                                 key_value_heads_p,
                                 head_size_p,
                                 tq_bs,
+                                1.0,
+                                1.0,
                             )
                         }) {
                             r?;
