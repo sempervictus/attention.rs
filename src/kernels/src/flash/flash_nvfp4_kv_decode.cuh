@@ -1,24 +1,30 @@
 /**
- * NVFP4 paged KV decode: software dequant (e2m16) + standard paged attention.
+ * NVFP4 paged KV decode: software dequant (E2M1 LUT * E4M3 scale) + paged attention.
  *
  * Proven SM120 pattern (hikarioyama/vllm-nvfp4-kv-sm120):
  *   - Dequantize FP4 E2M1 codes to BF16 in registers using E4M3 group-16 scales
- *   - Compute attention with standard mma.sync (NOT block-scaled MMA)
+ *   - Compute attention with standard paged iteration + online softmax
  *   - 91-100% of FP8 decode throughput, 1.78x KV capacity
  *
  * Paged layout (matching flash_nvfp4_kv_store):
- *   K_fp4: [num_blocks, block_size, num_kv_heads, head_dim/2] U8
- *   K_sf:  [num_blocks, block_size, num_kv_heads, head_dim/16] U8 (E4M3)
+ *   K_fp4: [num_blocks, block_size, num_kv_heads, head_dim/2] U8 (packed FP4)
+ *   K_sf:  [num_blocks, block_size, num_kv_heads, head_dim/16] U8 (E4M3 scales)
  *   V_fp4, V_sf: same shapes
  *
- * Q is WHT-rotated on-the-fly (if rotate=true) to match the rotated K in cache.
+ * Lane-to-data mapping (HDIM=128, NVDEC_VEC=4):
+ *   Lane L holds elements [L*4, L*4+3]
+ *   Group G = L/4 covers elements [G*16, (G+1)*16)
+ *   FP4 byte offset for lane L: L*2 (2 bytes = 4 codes)
+ *   SF byte offset for group G: G (1 E4M3 scale per 16 elements)
+ *
+ * Q is WHT-rotated on-the-fly (if rotate=true) to match rotated K in cache.
  * V is unrotated.
  */
 
 #include "flash_sm_compat.cuh"
 // wht_transform, get_sign_flip from flash_turboquant.cuh
 // nvfp4_e2m1_to_float, e4m3_to_float_direct from flash_nvfp4_kv_store.cuh
-// TQ4_NUM_WARPS, TQ4_BC, VEC_BF16, VEC_U32 from flash_turboquant_lowbit.cuh / flash_decode_paged_fp8.cuh
+// TQ4_NUM_WARPS, TQ4_BC from flash_turboquant_lowbit.cuh
 
 #ifndef FLASH_HDIM
 #define FLASH_HDIM 128
@@ -38,15 +44,19 @@
 #endif
 
 #define NVDEC_VEC (HDIM / WARP_SIZE)
+// Each lane holds NVDEC_VEC elements. Group of 16 is handled by 16/NVDEC_VEC lanes.
 #define NVDEC_LANES_PER_GROUP (16 / NVDEC_VEC)
+// Lane L's group index: L / NVDEC_LANES_PER_GROUP
+// Lane L's FP4 byte offset within its group: (L % NVDEC_LANES_PER_GROUP) * (NVDEC_VEC / 2)
+// Lane L's SF byte offset: L / NVDEC_LANES_PER_GROUP
 
 template<typename HalfT>
 __global__ void flash_nvfp4_kv_decode(
     const HalfT* __restrict__ Q,
-    const unsigned char* K_fp4,
-    const unsigned char* K_sf,
-    const unsigned char* V_fp4,
-    const unsigned char* V_sf,
+    const unsigned char* __restrict__ K_fp4,
+    const unsigned char* __restrict__ K_sf,
+    const unsigned char* __restrict__ V_fp4,
+    const unsigned char* __restrict__ V_sf,
     HalfT* __restrict__ O,
     const int* __restrict__ block_tables,
     const int* __restrict__ seq_lens,
@@ -78,7 +88,7 @@ __global__ void flash_nvfp4_kv_decode(
     const unsigned int gqa_ratio = num_q_heads / num_kv_heads;
     const unsigned int kv_head = q_head / gqa_ratio;
 
-    // Load Q, apply W flip + WHT rotation
+    // Load Q, apply WHT rotation
     const unsigned int bf16_vec_off = lane_id * NVDEC_VEC;
     const unsigned int* q32 = (const unsigned int*)(Q + (unsigned long long)seq_idx * q_stride
                                                        + (unsigned long long)q_head * head_dim + bf16_vec_off);
@@ -119,7 +129,9 @@ __global__ void flash_nvfp4_kv_decode(
     const unsigned long long fp4_page = (unsigned long long)block_size * num_kv_heads * hd_half;
     const unsigned long long sf_page  = (unsigned long long)block_size * num_kv_heads * hd_groups;
 
-    unsigned int pos = my_start;
+    // This lane's fixed offsets within a (position, head) row
+    const unsigned int lane_fp4_off = lane_id * (NVDEC_VEC / 2);  // byte offset in FP4 row
+    const unsigned int lane_sf_off  = lane_id / NVDEC_LANES_PER_GROUP;  // group index = SF byte offset    unsigned int pos = my_start;
     while (pos < my_end) {
         unsigned int logical_block = pos / block_size;
         unsigned int block_offset = pos % block_size;
@@ -128,7 +140,7 @@ __global__ void flash_nvfp4_kv_decode(
         unsigned int remaining_total = my_end - pos;
         unsigned int batch_count = (remaining_in_block < remaining_total) ? remaining_in_block : remaining_total;
 
-        // Base pointers for this physical page + kv_head
+        // Base for for this physical page + kv_head
         const unsigned char* k_fp4_base = K_fp4 + (unsigned long long)physical_block * fp4_page
                                          + (unsigned long long)kv_head * hd_half;
         const unsigned char* k_sf_base  = K_sf  + (unsigned long long)physical_block * sf_page
@@ -147,30 +159,22 @@ __global__ void flash_nvfp4_kv_decode(
             #pragma unroll
             for (int b = 0; b < TQ4_BC; b++) {
                 unsigned int bo = block_offset + processed + b;
-                const unsigned char* kp = k_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half;
-                const unsigned char* ks = k_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups;
+                // Per-position byte offsets
+                const unsigned char* kp = k_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half + lane_fp4_off;
+                const unsigned char* ks = k_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups + lane_sf_off;
 
-                // Dequant K: FP4 E2M1 * E4M3 scale -> float, dot with Q
-                float dot = 0.f;
-                #pragma unroll
-                for (int g = 0; g < (head_dim / 16); g++) {
-                    unsigned int lane_start = g * NVDEC_LANES_PER_GROUP;
-                    if (lane_id < lane_start || lane_id >= lane_start + NVDEC_LANES_PER_GROUP) continue;
-                    int local = lane_id - lane_start;
-                    int elem_base = local * NVDEC_VEC;
+                // Dequant K: 2 bytes of FP4 = 4 codes, 1 byte of E4M3 scale
+                float k_scale = e4m3_to_float_direct(*ks);
+                unsigned char packed0 = *kp;
+                unsigned char p1 = *(kp + 1);
+                float k0 = nvfp4_e2m1_to_float(p0 & 0xF) * k_scale;
+                float k1 = nvfp4_e2m1_to_float((p0 >> 4) & 0xF) * k_scale;
+                float k2 = nvfp4_e2m1_to_float(p1 & 0xF) * k_scale;
+                float k3 = nvfp4_e2m1_to_float((p1 >> 4) & 0xF) * k_scale;
 
-                    float k_scale = e4m3_to_float_direct(ks[g]);
-                    unsigned char packed = kp[elem_base / 2];
-                    float k0 = nvfp4_e2m1_to_float(packed & 0xF) * k_scale;
-                    float k1 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * k_scale;
-                    dot += q_reg[elem_base] * k0 + q_reg[elem_base + 1] * k1;
-                    if (NVDEC_VEC >= 2) {
-                        packed = kp[elem_base / 2 + 1];
-                        float k2 = nvfp4_e2m1_to_float(packed & 0xF) * k_scale;
-                        float k3 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * k_scale;
-                        dot += q_reg[elem_base + 2] * k2 + q_reg[elem_base + 3] * k3;
-                    }
-                }
+                float dot = q_reg[0]*k0 + q_reg[1]*k1 + q_reg[2]*k2 + q_reg[3]*k3;
+
+                // Full warp reduction (all 32 lanes contribute to the dot)
                 #pragma unroll
                 for (int off = WARP_SIZE/2; off > 0; off >>= 1)
                     dot += __shfl_xor_sync(0xffffffff, dot, off);
@@ -195,65 +199,40 @@ __global__ void flash_nvfp4_kv_decode(
                 l_val += exp_factors[b];
             }
 
-            // PV accumulate: dequant V FP4 * E4M3 scale
+            // PV accumulate: dequant V, multiply by attention weight
             #pragma unroll
             for (int b = 0; b < TQ4_BC; b++) {
                 unsigned int bo = block_offset + processed + b;
-                const unsigned char* vp = v_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half;
-                const unsigned char* vs = v_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups;
-                float w = exp_factors[b];
+                const unsigned char* vp = v_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half + lane_fp4_off;
+                const unsigned char* vs = v_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups + lane_sf_off;
 
-                #pragma unroll
-                for (int g = 0; g < (head_dim / 16); g++) {
-                    unsigned int lane_start = g * NVDEC_LANES_PER_GROUP;
-                    if (lane_id < lane_start || lane_id >= lane_start + NVDEC_LANES_PER_GROUP) continue;
-                    int local = lane_id - lane_start;
-                    int elem_base = local * NVDEC_VEC;
-
-                    float v_scale = e4m3_to_float_direct(vs[g]);
-                    unsigned char packed = vp[elem_base / 2];
-                    float v0 = nvfp4_e2m1_to_float(packed & 0xF) * v_scale;
-                    float v1 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * v_scale;
-                    o_reg[elem_base]     += w * v0;
-                    o_reg[elem_base + 1] += w * v1;
-                    if (NVDEC_VEC >= 2) {
-                        packed = vp[elem_base / 2 + 1];
-                        float v2 = nvfp4_e2m1_to_float(packed & 0xF) * v_scale;
-                        float v3 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * v_scale;
-                        o_reg[elem_base + 2] += w * v2;
-                        o_reg[elem_base + 3] += w * v3;
-                    }
-                }
+                float v_scale = e4m3_to_float_direct(*vs);
+                float w = exp_factors[b] * v_scale;
+                unsigned char p0 = *vp;
+                unsigned char p1 = *(vp + 1);
+                o_reg[0] += w * nvfp4_e2m1_to_float(p0 & 0xF);
+                o_reg[1] += w * nvfp4_e2m1_to_float((p0 >> 4) & 0xF);
+                o_reg[2] += w * nvfp4_e2m1_to_float(p1 & 0xF);
+                o_reg[3] += w * nvfp4_e2m1_to_float((p1 >> 4) & 0xF);
             }
             m_val = m_new;
         }
 
-        // Remainder
+        // Remainder (positions not aligned to TQ4_BC)
         for (; processed < batch_count; processed++) {
             unsigned int bo = block_offset + processed;
-            const unsigned char* kp = k_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half;
-            const unsigned char* ks = k_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups;
+            const unsigned char* kp = k_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half + lane_fp4_off;
+            const unsigned char* ks = k_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups + lane_sf_off;
 
-            float dot = 0.f;
-            #pragma unroll
-            for (int g = 0; g < (head_dim / 16); g++) {
-                unsigned int lane_start = g * NVDEC_LANES_PER_GROUP;
-                if (lane_id < lane_start || lane_id >= lane_start + NVDEC_LANES_PER_GROUP) continue;
-                int local = lane_id - lane_start;
-                int elem_base = local * NVDEC_VEC;
+            float k_scale = e4m3_to_float_direct(*ks);
+            unsigned char p0 = *kp;
+            unsigned char p1 = *(kp + 1);
+            float k0 = nvfp4_e2m1_to_float(p0 & 0xF) * k_scale;
+            float k1 = nvfp4_e2m1_to_float((p0 >> 4) & 0xF) * k_scale;
+            float k2 = nvfp4_e2m1_to_float(p1 & 0xF) * k_scale;
+            float k3 = nvfp4_e2m1_to_float((p1 >> 4) & 0xF) * k_scale;
 
-                float k_scale = e4m3_to_float_direct(ks[g]);
-                unsigned char packed = kp[elem_base / 2];
-                float k0 = nvfp4_e2m1_to_float(packed & 0xF) * k_scale;
-                float k1 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * k_scale;
-                dot += q_reg[elem_base] * k0 + q_reg[elem_base + 1] * k1;
-                if (NVDEC_VEC >= 2) {
-                    packed = kp[elem_base / 2 + 1];
-                    float k2 = nvfp4_e2m1_to_float(packed & 0xF) * k_scale;
-                    float k3 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * k_scale;
-                    dot += q_reg[elem_base + 2] * k2 + q_reg[elem_base + 3] * k3;
-                }
-            }
+            float dot = q_reg[0]*k0 + q_reg[1]*k1 + q_reg[2]*k2 + q_reg[3]*k3;
             #pragma unroll
             for (int off = WARP_SIZE/2; off > 0; off >>= 1)
                 dot += __shfl_xor_sync(0xffffffff, dot, off);
@@ -267,30 +246,18 @@ __global__ void flash_nvfp4_kv_decode(
             #pragma unroll
             for (int i = 0; i < NVDEC_VEC; i++) o_reg[i] *= exp_old;
 
-            const unsigned char* vp = v_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half;
-            const unsigned char* vs = v_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups;
-            float w = exp_new;
-            #pragma unroll
-            for (int g = 0; g < (head_dim / 16); g++) {
-                unsigned int lane_start = g * NVDEC_LANES_PER_GROUP;
-                if (lane_id < lane_start || lane_id >= lane_start + NVDEC_LANES_PER_GROUP) continue;
-                int local = lane_id - lane_start;
-                int elem_base = local * NVDEC_VEC;
+            // V accumulate
+            const unsigned char* vp = v_fp4_base + (unsigned long long)bo * num_kv_heads * hd_half + lane_fp4_off;
+            const unsigned char* vs = v_sf_base  + (unsigned long long)bo * num_kv_heads * hd_groups + lane_sf_off;
+            float v_scale = e4m3_to_float_direct(*vs);
+            float w = exp_new * v_scale;
+            unsigned char vp0 = *vp;
+            unsigned char vp1 = *(vp + 1);
+            o_reg[0] += w * nvfp4_e2m1_to_float(vp0 & 0xF);
+            o_reg[1] += w * nvfp4_e2m1_to_float((vp0 >> 4) & 0xF);
+            o_reg[2] += w * nvfp4_e2m1_to_float(vp1 & 0xF);
+            o_reg[3] += w * nvfp4_e2m1_to_float((vp1 >> 4) & 0xF);
 
-                float v_scale = e4m3_to_float_direct(vs[g]);
-                unsigned char packed = vp[elem_base / 2];
-                float v0 = nvfp4_e2m1_to_float(packed & 0xF) * v_scale;
-                float v1 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * v_scale;
-                o_reg[elem_base]     += w * v0;
-                o_reg[elem_base + 1] += w * v1;
-                if (NVDEC_VEC >= 2) {
-                    packed = vp[elem_base / 2 + 1];
-                    float v2 = nvfp4_e2m1_to_float(packed & 0xF) * v_scale;
-                    float v3 = nvfp4_e2m1_to_float((packed >> 4) & 0xF) * v_scale;
-                    o_reg[elem_base + 2] += w * v2;
-                    o_reg[elem_base + 3] += w * v3;
-                }
-            }
             m_val = m_new;
         }
 
@@ -332,13 +299,10 @@ __global__ void flash_nvfp4_kv_decode(
         float final_l = smem_l[0];
         float inv_l = (final_l > 0.f) ? (1.f / final_l) : 0.f;
         HalfT* o_ptr = O + (unsigned long long)seq_idx * num_q_heads * head_dim
-                      + (unsigned long long)q_head * head_dim + bf16_vec_off;
+                       + (unsigned long long)q_head * head_dim + bf16_vec_off;
         #pragma unroll
-        for (int i = 0; i < NVDEC_VEC / 2; i++) {
-            float v0 = smem_o[0][bf16_vec_off + 2*i]     * inv_l;
-            float v1 = smem_o[0][bf16_vec_off + 2*i + 1] * inv_l;
-            o_ptr[2*i]     = FLASH_FROM_FLOAT(v0);
-            o_ptr[2*i + 1] = FLASH_FROM_FLOAT(v1);
+        for (int i = 0; i < NVDEC_VEC; i++) {
+            o_ptr[i] = FLASH_FROM_FLOAT(smem_o[0][bf16_vec_off + i] * inv_l);
         }
     }
 }
