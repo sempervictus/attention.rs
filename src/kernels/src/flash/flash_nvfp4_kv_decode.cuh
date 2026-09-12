@@ -131,7 +131,9 @@ __global__ void flash_nvfp4_kv_decode(
 
     // This lane's fixed offsets within a (position, head) row
     const unsigned int lane_fp4_off = lane_id * (NVDEC_VEC / 2);  // byte offset in FP4 row
-    const unsigned int lane_sf_off  = lane_id / NVDEC_LANES_PER_GROUP;  // group index = SF byte offset    unsigned int pos = my_start;
+    const unsigned int lane_sf_off  = lane_id / NVDEC_LANES_PER_GROUP;  // group index = SF byte offset
+
+    unsigned int pos = my_start;
     while (pos < my_end) {
         unsigned int logical_block = pos / block_size;
         unsigned int block_offset = pos % block_size;
@@ -167,8 +169,8 @@ __global__ void flash_nvfp4_kv_decode(
                 float k_scale = e4m3_to_float_direct(*ks);
                 unsigned char packed0 = *kp;
                 unsigned char p1 = *(kp + 1);
-                float k0 = nvfp4_e2m1_to_float(p0 & 0xF) * k_scale;
-                float k1 = nvfp4_e2m1_to_float((p0 >> 4) & 0xF) * k_scale;
+                float k0 = nvfp4_e2m1_to_float(packed0 & 0xF) * k_scale;
+                float k1 = nvfp4_e2m1_to_float((packed0 >> 4) & 0xF) * k_scale;
                 float k2 = nvfp4_e2m1_to_float(p1 & 0xF) * k_scale;
                 float k3 = nvfp4_e2m1_to_float((p1 >> 4) & 0xF) * k_scale;
 

@@ -126,4 +126,37 @@ mod nvfp4_kv_tests {
             true,
         ).unwrap();
     }
+
+    #[test]
+    fn nvfp4_prefill_runs() {
+        let dev = Device::new_cuda(0).unwrap();
+        let nseq = 2;
+        let nqh = 4;
+        let nkv = 2;
+        let hd = 128;
+        let bs = 16;
+        let max_blocks = 4;
+        let ngroups = hd / 16;
+        let q_len = 8;
+
+        let k_fp4 = Tensor::zeros((max_blocks, bs, nkv, hd / 2), DType::U8, &dev).unwrap();
+        let k_sf = Tensor::zeros((max_blocks, bs, nkv, ngroups), DType::U8, &dev).unwrap();
+        let v_fp4 = Tensor::zeros((max_blocks, bs, nkv, hd / 2), DType::U8, &dev).unwrap();
+        let v_sf = Tensor::zeros((max_blocks, bs, nkv, ngroups), DType::U8, &dev).unwrap();
+
+        let q = Tensor::zeros((nseq * q_len, nqh, hd), DType::BF16, &dev).unwrap();
+        let o = Tensor::zeros((nseq * q_len, nqh, hd), DType::BF16, &dev).unwrap();
+        let bt = Tensor::zeros((nseq, max_blocks), DType::U32, &dev).unwrap();
+        let cl = Tensor::from_vec(vec![bs as u32; nseq], (nseq,), &dev).unwrap();
+
+        flash::flash_nvfp4_kv_prefill(
+            &q, &k_fp4, &k_sf, &v_fp4, &v_sf,
+            &bt, &cl, &o,
+            max_blocks * bs, nqh, nkv, hd,
+            1.0f32 / (hd as f32).sqrt(),
+            0.0,
+            None,
+            true,
+        ).unwrap();
+    }
 }
