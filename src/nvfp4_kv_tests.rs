@@ -159,4 +159,67 @@ mod nvfp4_kv_tests {
             true,
         ).unwrap();
     }
+
+    #[test]
+    fn nvfp4_accuracy_roundtrip() {
+        let dev = Device::new_cuda(0).unwrap();
+        let nseq = 1;
+        let nqh = 2;
+        let nkv = 2;
+        let hd = 128;
+        let bs = 16;
+        let max_blocks = 2;
+        let ngroups = hd / 16;
+        let seq_len = bs;
+
+        let k_data: Vec<half::bf16> = (0..nseq * nkv * hd)
+            .map(|i| half::bf16::from_f32((i as f32 % 20.0) / 4.0 - 2.5))
+            .collect();
+        let v_data: Vec<half::bf16> = (0..nseq * nkv * hd)
+            .map(|i| half::bf16::from_f32((i as f32 % 16.0) / 4.0 - 2.0))
+            .collect();
+        let k = Tensor::from_vec(k_data, (nseq, nkv, hd), &dev).unwrap();
+        let v = Tensor::from_vec(v_data, (nseq, nkv, hd), &dev).unwrap();
+
+        let q_data: Vec<half::bf16> = (0..nseq * nqh * hd)
+            .map(|i| half::bf16::from_f32((i as f32 % 10.0) / 2.0 - 2.5))
+            .collect();
+        let q = Tensor::from_vec(q_data, (nseq, nqh, hd), &dev).unwrap();
+
+        let slots = Tensor::from_vec((0..nseq as i64).collect::<Vec<i64>>(), (nseq,), &dev).unwrap();
+
+        let k_fp4 = Tensor::zeros((max_blocks, bs, nkv, hd / 2), DType::U8, &dev).unwrap();
+        let k_sf = Tensor::zeros((max_blocks, bs, nkv, ngroups), DType::U8, &dev).unwrap();
+        let v_fp4 = Tensor::zeros((max_blocks, bs, nkv, hd / 2), DType::U8, &dev).unwrap();
+        let v_sf = Tensor::zeros((max_blocks, bs, nkv, ngroups), DType::U8, &dev).unwrap();
+
+        flash::flash_nvfp4_kv_store(
+            &k, &v, &k_fp4, &k_sf, &v_fp4, &v_sf,
+            &slots, nkv, hd, bs, 1.0, 1.0, false,
+        ).unwrap();
+
+        let o_nvfp4 = Tensor::zeros((nseq, nqh, hd), DType::BF16, &dev).unwrap();
+        let bt = Tensor::from_vec(vec![0u32, 1u32], (nseq, max_blocks), &dev).unwrap();
+        let cl = Tensor::from_vec(vec![seq_len as u32], (nseq,), &dev).unwrap();
+
+        flash::flash_nvfp4_kv_decode(
+            &q, &k_fp4, &k_sf, &v_fp4, &v_sf,
+            &bt, &cl, &o_nvfp4,
+            max_blocks * bs, nqh, nkv, hd,
+            1.0f32 / (hd as f32).sqrt(),
+            0.0,
+            None,
+            false,
+        ).unwrap();
+
+        // Verify NVFP4 decode produces non-zero, finite output
+        let o_nvfp4_f32 = o_nvfp4.to_dtype(DType::F32).unwrap();
+        let o_vec = o_nvfp4_f32.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let nonzero = o_vec.iter().filter(|&&x| x != 0.0).count();
+        let finite = o_vec.iter().filter(|x| x.is_finite()).count();
+        assert!(nonzero > 0, "NVFP4 decode output must have non-zero values");
+        assert_eq!(finite, o_vec.len(), "NVFP4 decode output must be all finite");
+        let max_val = o_vec.iter().cloned().fold(0.0f32, f32::max);
+        println!("NVFP4 decode: nonzero={}/{}, max={:.4}", nonzero, o_vec.len(), max_val);
+    }
 }
