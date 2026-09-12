@@ -315,6 +315,71 @@ pub fn flash_fp8_rot_decode(
 }
 
 #[cfg(feature = "cuda")]
+pub fn flash_mxfp4_kv_store(
+    key: &Tensor,
+    value: &Tensor,
+    k_fp4: &Tensor,
+    k_sf: &Tensor,
+    v_fp4: &Tensor,
+    v_sf: &Tensor,
+    slot_mapping: &Tensor,
+    num_kv_heads: usize,
+    head_dim: usize,
+    block_size: usize,
+    c_k: f32,
+    c_v: f32,
+    rotate: bool,
+) -> Result<()> {
+    let dev = match key.device() {
+        candle::Device::Cuda(d) => d,
+        _ => candle::bail!("flash_mxfp4_kv_store requires CUDA"),
+    };
+    let stream = get_cuda_stream(dev);
+    let num_tokens = key.dim(0)?;
+
+    let k_ptr = ptr_from_tensor(key)?;
+    let v_ptr = ptr_from_tensor(value)?;
+    let k_fp4_ptr = ptr_from_tensor(k_fp4)? as *mut std::ffi::c_void;
+    let k_sf_ptr = ptr_from_tensor(k_sf)? as *mut std::ffi::c_void;
+    let v_fp4_ptr = ptr_from_tensor(v_fp4)? as *mut std::ffi::c_void;
+    let v_sf_ptr = ptr_from_tensor(v_sf)? as *mut std::ffi::c_void;
+
+    let slot_ptr = {
+        let (s, l) = slot_mapping.storage_and_layout();
+        let s = match &*s {
+            candle::Storage::Cuda(c) => c,
+            _ => candle::bail!("slot_mapping must be CUDA"),
+        };
+        let slice = s.as_cuda_slice::<i64>()?;
+        *slice.slice(l.start_offset()..).device_ptr() as *const i64
+    };
+
+    let flash_dtype = flash_half_dtype(key.dtype())?;
+
+    unsafe {
+        kernels::ffi::call_flash_mxfp4_kv_store(
+            k_ptr,
+            v_ptr,
+            k_fp4_ptr,
+            k_sf_ptr,
+            v_fp4_ptr,
+            v_sf_ptr,
+            slot_ptr,
+            num_tokens as u32,
+            num_kv_heads as u32,
+            head_dim as u32,
+            block_size as u32,
+            c_k,
+            c_v,
+            rotate as i32,
+            flash_dtype,
+            stream,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cuda")]
 pub fn flash_prefill(
     query: &Tensor,
     key_cache: &Tensor,
