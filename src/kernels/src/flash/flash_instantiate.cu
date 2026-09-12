@@ -53,6 +53,7 @@
 #define flash_reshape_and_cache flash_reshape_and_cache_128
 #define flash_reshape_and_cache_fp8 flash_reshape_and_cache_fp8_128
 #define flash_fp8_rot_store flash_fp8_rot_store_128
+#define flash_mxfp4_kv_store flash_mxfp4_kv_store_128
 #define flash_fp8_rot_decode flash_fp8_rot_decode_128
 #define flash_bf16_absmax flash_bf16_absmax_128
 #define flash_tq_store_k8v4 flash_tq_store_k8v4_128
@@ -98,6 +99,7 @@
 #include "flash_prefill_tq4.cuh"
 #include "flash_prefill_tq3.cuh"
 #include "flash_fp8_rot_store.cuh"
+#include "flash_mxfp4_kv_store.cuh"
 #include "flash_fp8_rot_decode.cuh"
 
 #undef FLASH_HDIM
@@ -109,6 +111,7 @@
 #undef flash_reshape_and_cache
 #undef flash_reshape_and_cache_fp8
 #undef flash_fp8_rot_store
+#undef flash_mxfp4_kv_store
 #undef flash_fp8_rot_decode
 #undef flash_bf16_absmax
 #undef flash_tq_store_k8v4
@@ -185,6 +188,7 @@
 #define flash_reshape_and_cache flash_reshape_and_cache_256
 #define flash_reshape_and_cache_fp8 flash_reshape_and_cache_fp8_256
 #define flash_fp8_rot_store flash_fp8_rot_store_256
+#define flash_mxfp4_kv_store flash_mxfp4_kv_store_256
 #define flash_fp8_rot_decode flash_fp8_rot_decode_256
 #define flash_bf16_absmax flash_bf16_absmax_256
 #define flash_tq_store_k8v4 flash_tq_store_k8v4_256
@@ -228,6 +232,7 @@
 #include "flash_prefill_tq4.cuh"
 #include "flash_prefill_tq3.cuh"
 #include "flash_fp8_rot_store.cuh"
+#include "flash_mxfp4_kv_store.cuh"
 #include "flash_fp8_rot_decode.cuh"
 
 #undef FLASH_HDIM
@@ -239,6 +244,7 @@
 #undef flash_reshape_and_cache
 #undef flash_reshape_and_cache_fp8
 #undef flash_fp8_rot_store
+#undef flash_mxfp4_kv_store
 #undef flash_fp8_rot_decode
 #undef flash_bf16_absmax
 #undef flash_tq_store_k8v4
@@ -314,6 +320,7 @@
 #define flash_reshape_and_cache flash_reshape_and_cache_512
 #define flash_reshape_and_cache_fp8 flash_reshape_and_cache_fp8_512
 #define flash_fp8_rot_store flash_fp8_rot_store_512
+#define flash_mxfp4_kv_store flash_mxfp4_kv_store_512
 #define flash_fp8_rot_decode flash_fp8_rot_decode_512
 #define flash_bf16_absmax flash_bf16_absmax_512
 #define flash_tq_store_k8v4 flash_tq_store_k8v4_512
@@ -365,6 +372,7 @@
 #include "flash_prefill_tq4.cuh"
 #include "flash_prefill_tq3.cuh"
 #include "flash_fp8_rot_store.cuh"
+#include "flash_mxfp4_kv_store.cuh"
 #include "flash_fp8_rot_decode.cuh"
 
 #undef FLASH_HDIM
@@ -375,6 +383,7 @@
 
 #undef flash_reshape_and_cache
 #undef flash_fp8_rot_store
+#undef flash_mxfp4_kv_store
 #undef flash_fp8_rot_decode
 #undef flash_reshape_and_cache_fp8
 #undef flash_bf16_absmax
@@ -1557,5 +1566,76 @@ extern "C" void call_flash_fp8_rot_decode(
 #endif
     else {
         printf("call_flash_fp8_rot_decode: unsupported dtype %d\n", (int)dtype);
+    }
+}
+
+extern "C" void call_flash_mxfp4_kv_store(
+    const void* K, const void* V,
+    void* K_fp4, void* K_sf, void* V_fp4, void* V_sf,
+    const long long* slot_mapping,
+    unsigned int num_tokens, unsigned int num_kv_heads,
+    unsigned int head_dim, unsigned int block_size,
+    float c_k, float c_v, int rotate,
+    int dtype, int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (dtype == 0) {
+#define HALF __half
+        dim3 grid(num_tokens, num_kv_heads);
+        if (head_dim <= 128) {
+            flash_mxfp4_kv_store_128<HALF><<<grid, 32, 0, s>>>(
+                (const HALF*)K, (const HALF*)V,
+                (unsigned char*)K_fp4, (unsigned char*)K_sf,
+                (unsigned char*)V_fp4, (unsigned char*)V_sf,
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size,
+                c_k, c_v, rotate != 0);
+        } else if (head_dim <= 256) {
+            flash_mxfp4_kv_store_256<HALF><<<grid, 32, 0, s>>>(
+                (const HALF*)K, (const HALF*)V,
+                (unsigned char*)K_fp4, (unsigned char*)K_sf,
+                (unsigned char*)V_fp4, (unsigned char*)V_sf,
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size,
+                c_k, c_v, rotate != 0);
+        } else {
+            flash_mxfp4_kv_store_512<HALF><<<grid, 32, 0, s>>>(
+                (const HALF*)K, (const HALF*)V,
+                (unsigned char*)K_fp4, (unsigned char*)K_sf,
+                (unsigned char*)V_fp4, (unsigned char*)V_sf,
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size,
+                c_k, c_v, rotate != 0);
+        }
+#undef HALF
+    }
+#ifndef NO_BF16_KERNEL
+    else if (dtype == 1) {
+#define HALF __nv_bfloat16
+        dim3 grid(num_tokens, num_kv_heads);
+        if (head_dim <= 128) {
+            flash_mxfp4_kv_store_128<HALF><<<grid, 32, 0, s>>>(
+                (const HALF*)K, (const HALF*)V,
+                (unsigned char*)K_fp4, (unsigned char*)K_sf,
+                (unsigned char*)V_fp4, (unsigned char*)V_sf,
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size,
+                c_k, c_v, rotate != 0);
+        } else if (head_dim <= 256) {
+            flash_mxfp4_kv_store_256<HALF><<<grid, 32, 0, s>>>(
+                (const HALF*)K, (const HALF*)V,
+                (unsigned char*)K_fp4, (unsigned char*)K_sf,
+                (unsigned char*)V_fp4, (unsigned char*)V_sf,
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size,
+                c_k, c_v, rotate != 0);
+        } else {
+            flash_mxfp4_kv_store_512<HALF><<<grid, 32, 0, s>>>(
+                (const HALF*)K, (const HALF*)V,
+                (unsigned char*)K_fp4, (unsigned char*)K_sf,
+                (unsigned char*)V_fp4, (unsigned char*)V_sf,
+                slot_mapping, num_tokens, num_kv_heads, head_dim, block_size,
+                c_k, c_v, rotate != 0);
+        }
+#undef HALF
+    }
+#endif
+    else {
+        printf("call_flash_mxfp4_kv_store: unsupported dtype %d\n", (int)dtype);
     }
 }

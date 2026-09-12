@@ -3612,6 +3612,26 @@ extern "C" {
     );
 
     #[cfg(feature = "flash")]
+    pub fn call_flash_mxfp4_kv_store(
+        key: *const c_void,
+        value: *const c_void,
+        k_fp4: *mut c_void,
+        k_sf: *mut c_void,
+        v_fp4: *mut c_void,
+        v_sf: *mut c_void,
+        slot_mapping: *const i64,
+        num_tokens: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        block_size: u32,
+        c_k: f32,
+        c_v: f32,
+        rotate: i32,
+        dtype: i32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
     pub fn call_flash_fp8_rot_decode(
         q: *const c_void,
         k_cache: *const c_void,
