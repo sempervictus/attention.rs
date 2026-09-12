@@ -315,7 +315,7 @@ pub fn flash_fp8_rot_decode(
 }
 
 #[cfg(feature = "cuda")]
-pub fn flash_mxfp4_kv_store(
+pub fn flash_nvfp4_kv_store(
     key: &Tensor,
     value: &Tensor,
     k_fp4: &Tensor,
@@ -332,7 +332,7 @@ pub fn flash_mxfp4_kv_store(
 ) -> Result<()> {
     let dev = match key.device() {
         candle::Device::Cuda(d) => d,
-        _ => candle::bail!("flash_mxfp4_kv_store requires CUDA"),
+        _ => candle::bail!("flash_nvfp4_kv_store requires CUDA"),
     };
     let stream = get_cuda_stream(dev);
     let num_tokens = key.dim(0)?;
@@ -357,7 +357,7 @@ pub fn flash_mxfp4_kv_store(
     let flash_dtype = flash_half_dtype(key.dtype())?;
 
     unsafe {
-        kernels::ffi::call_flash_mxfp4_kv_store(
+        kernels::ffi::call_flash_nvfp4_kv_store(
             k_ptr,
             v_ptr,
             k_fp4_ptr,
@@ -377,6 +377,92 @@ pub fn flash_mxfp4_kv_store(
         );
     }
     Ok(())
+}
+
+#[cfg(feature = "cuda")]
+pub fn flash_nvfp4_kv_decode(
+    query: &Tensor,
+    k_fp4: &Tensor,
+    k_sf: &Tensor,
+    v_fp4: &Tensor,
+    v_sf: &Tensor,
+    block_tables: &Tensor,
+    context_lens: &Tensor,
+    output: &Tensor,
+    max_context_len: usize,
+    num_q_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    softcap: f32,
+    sliding_window: Option<usize>,
+    rotate: bool,
+) -> Result<Tensor> {
+    let dev = match query.device() {
+        candle::Device::Cuda(d) => d,
+        _ => candle::bail!("flash_nvfp4_kv_decode requires CUDA"),
+    };
+    let stream = get_cuda_stream(dev);
+
+    let num_seqs = query.dim(0)?;
+    let block_size = k_fp4.dim(1)?;
+    let q_stride = (num_q_heads * head_dim) as u32;
+
+    let q_ptr = ptr_from_tensor(query)?;
+    let k_fp4_ptr = ptr_from_tensor(k_fp4)?;
+    let k_sf_ptr = ptr_from_tensor(k_sf)?;
+    let v_fp4_ptr = ptr_from_tensor(v_fp4)?;
+    let v_sf_ptr = ptr_from_tensor(v_sf)?;
+    let o_ptr = ptr_from_tensor(output)? as *mut std::ffi::c_void;
+
+    let bt_ptr = {
+        let (s, l) = block_tables.storage_and_layout();
+        let s = match &*s {
+            candle::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
+            _ => candle::bail!("block_tables must be CUDA"),
+        };
+        *s.slice(l.start_offset()..).device_ptr() as *const c_int
+    };
+    let cl_ptr = {
+        let (s, l) = context_lens.storage_and_layout();
+        let s = match &*s {
+            candle::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
+            _ => candle::bail!("context_lens must be CUDA"),
+        };
+        *s.slice(l.start_offset()..).device_ptr() as *const c_int
+    };
+
+    let max_blocks_per_seq = block_tables.dim(1)? as u32;
+    let sw = sliding_window.unwrap_or(0) as u32;
+    let flash_dtype = flash_half_dtype(query.dtype())?;
+
+    unsafe {
+        kernels::ffi::call_flash_nvfp4_kv_decode(
+            q_ptr,
+            k_fp4_ptr,
+            k_sf_ptr,
+            v_fp4_ptr,
+            v_sf_ptr,
+            o_ptr,
+            bt_ptr,
+            cl_ptr,
+            max_blocks_per_seq,
+            num_q_heads as u32,
+            num_kv_heads as u32,
+            head_dim as u32,
+            block_size as u32,
+            scale,
+            num_seqs as u32,
+            q_stride,
+            softcap,
+            sw,
+            rotate as i32,
+            flash_dtype,
+            stream,
+        );
+    }
+
+    Ok(output.clone())
 }
 
 #[cfg(feature = "cuda")]

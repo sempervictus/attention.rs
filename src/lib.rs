@@ -60,7 +60,7 @@ mod tq4_c_tests;
 mod fp8_rot_tests;
 
 #[cfg(all(test, feature = "cuda", feature = "flash"))]
-mod mxfp4_kv_tests;
+mod nvfp4_kv_tests;
 
 #[cfg(feature = "metal-flash")]
 pub mod metal_flash;
