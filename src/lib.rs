@@ -56,6 +56,9 @@ pub mod flash;
 #[cfg(all(test, feature = "cuda", feature = "flash"))]
 mod tq4_c_tests;
 
+#[cfg(all(test, feature = "cuda", feature = "flash"))]
+mod fp8_rot_tests;
+
 #[cfg(feature = "metal-flash")]
 pub mod metal_flash;
 

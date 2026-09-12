@@ -52,6 +52,8 @@
 #define flash_decode_paged_splitk_fp8 flash_decode_paged_splitk_fp8_128
 #define flash_reshape_and_cache flash_reshape_and_cache_128
 #define flash_reshape_and_cache_fp8 flash_reshape_and_cache_fp8_128
+#define flash_fp8_rot_store flash_fp8_rot_store_128
+#define flash_fp8_rot_decode flash_fp8_rot_decode_128
 #define flash_bf16_absmax flash_bf16_absmax_128
 #define flash_tq_store_k8v4 flash_tq_store_k8v4_128
 #define flash_tq_decode_k8v4 flash_tq_decode_k8v4_128
@@ -95,6 +97,8 @@
 #include "flash_turboquant_lowbit.cuh"
 #include "flash_prefill_tq4.cuh"
 #include "flash_prefill_tq3.cuh"
+#include "flash_fp8_rot_store.cuh"
+#include "flash_fp8_rot_decode.cuh"
 
 #undef FLASH_HDIM
 #undef flash_prefill_paged
@@ -104,6 +108,8 @@
 
 #undef flash_reshape_and_cache
 #undef flash_reshape_and_cache_fp8
+#undef flash_fp8_rot_store
+#undef flash_fp8_rot_decode
 #undef flash_bf16_absmax
 #undef flash_tq_store_k8v4
 #undef flash_tq_decode_k8v4
@@ -178,6 +184,8 @@
 #define flash_decode_paged_splitk_fp8 flash_decode_paged_splitk_fp8_256
 #define flash_reshape_and_cache flash_reshape_and_cache_256
 #define flash_reshape_and_cache_fp8 flash_reshape_and_cache_fp8_256
+#define flash_fp8_rot_store flash_fp8_rot_store_256
+#define flash_fp8_rot_decode flash_fp8_rot_decode_256
 #define flash_bf16_absmax flash_bf16_absmax_256
 #define flash_tq_store_k8v4 flash_tq_store_k8v4_256
 #define flash_tq_decode_k8v4 flash_tq_decode_k8v4_256
@@ -219,6 +227,8 @@
 #include "flash_turboquant_lowbit.cuh"
 #include "flash_prefill_tq4.cuh"
 #include "flash_prefill_tq3.cuh"
+#include "flash_fp8_rot_store.cuh"
+#include "flash_fp8_rot_decode.cuh"
 
 #undef FLASH_HDIM
 #undef flash_prefill_paged
@@ -228,6 +238,8 @@
 
 #undef flash_reshape_and_cache
 #undef flash_reshape_and_cache_fp8
+#undef flash_fp8_rot_store
+#undef flash_fp8_rot_decode
 #undef flash_bf16_absmax
 #undef flash_tq_store_k8v4
 #undef flash_tq_decode_k8v4
@@ -301,6 +313,8 @@
 #define flash_decode_paged_splitk_fp8 flash_decode_paged_splitk_fp8_512
 #define flash_reshape_and_cache flash_reshape_and_cache_512
 #define flash_reshape_and_cache_fp8 flash_reshape_and_cache_fp8_512
+#define flash_fp8_rot_store flash_fp8_rot_store_512
+#define flash_fp8_rot_decode flash_fp8_rot_decode_512
 #define flash_bf16_absmax flash_bf16_absmax_512
 #define flash_tq_store_k8v4 flash_tq_store_k8v4_512
 #define flash_tq_decode_k8v4 flash_tq_decode_k8v4_512
@@ -350,6 +364,8 @@
 #include "flash_turboquant_lowbit.cuh"
 #include "flash_prefill_tq4.cuh"
 #include "flash_prefill_tq3.cuh"
+#include "flash_fp8_rot_store.cuh"
+#include "flash_fp8_rot_decode.cuh"
 
 #undef FLASH_HDIM
 #undef flash_prefill_paged
@@ -358,6 +374,8 @@
 #undef flash_decode_paged_splitk_fp8
 
 #undef flash_reshape_and_cache
+#undef flash_fp8_rot_store
+#undef flash_fp8_rot_decode
 #undef flash_reshape_and_cache_fp8
 #undef flash_bf16_absmax
 #undef flash_tq_store_k8v4
@@ -1395,3 +1413,149 @@ extern "C" void call_flash_tq3_prefill(
     }
 }
 
+
+
+extern "C" void call_flash_fp8_rot_store(
+    const void* key, const void* value, void* key_cache, void* value_cache,
+    const long long* slot_mapping,
+    unsigned int num_tokens, unsigned int num_kv_heads,
+    unsigned int head_dim, unsigned int cache_block_size,
+    float c_k, float c_v, int rotate,
+    int dtype, int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    if (dtype == 0) {
+#define HALF __half
+        dim3 grid(num_tokens, num_kv_heads);
+        unsigned int threads = (head_dim + 31) / 32 * 32;
+        if (threads > 256) threads = 256;
+        if (threads < 32) threads = 32;
+        if (head_dim <= 128) {
+            flash_fp8_rot_store_128<HALF><<<grid, threads, 0, s>>>(
+                (const HALF*)key, (const HALF*)value,
+                key_cache, value_cache, slot_mapping,
+                num_tokens, num_kv_heads, head_dim, cache_block_size,
+                c_k, c_v, rotate != 0);
+        } else if (head_dim <= 256) {
+            flash_fp8_rot_store_256<HALF><<<grid, threads, 0, s>>>(
+                (const HALF*)key, (const HALF*)value,
+                key_cache, value_cache, slot_mapping,
+                num_tokens, num_kv_heads, head_dim, cache_block_size,
+                c_k, c_v, rotate != 0);
+        } else {
+            flash_fp8_rot_store_512<HALF><<<grid, threads, 0, s>>>(
+                (const HALF*)key, (const HALF*)value,
+                key_cache, value_cache, slot_mapping,
+                num_tokens, num_kv_heads, head_dim, cache_block_size,
+                c_k, c_v, rotate != 0);
+        }
+#undef HALF
+    }
+#ifndef NO_BF16_KERNEL
+    else if (dtype == 1) {
+#define HALF __nv_bfloat16
+        dim3 grid(num_tokens, num_kv_heads);
+        unsigned int threads = (head_dim + 31) / 32 * 32;
+        if (threads > 256) threads = 256;
+        if (threads < 32) threads = 32;
+        if (head_dim <= 128) {
+            flash_fp8_rot_store_128<HALF><<<grid, threads, 0, s>>>(
+                (const HALF*)key, (const HALF*)value,
+                key_cache, value_cache, slot_mapping,
+                num_tokens, num_kv_heads, head_dim, cache_block_size,
+                c_k, c_v, rotate != 0);
+        } else if (head_dim <= 256) {
+            flash_fp8_rot_store_256<HALF><<<grid, threads, 0, s>>>(
+                (const HALF*)key, (const HALF*)value,
+                key_cache, value_cache, slot_mapping,
+                num_tokens, num_kv_heads, head_dim, cache_block_size,
+                c_k, c_v, rotate != 0);
+        } else {
+            flash_fp8_rot_store_512<HALF><<<grid, threads, 0, s>>>(
+                (const HALF*)key, (const HALF*)value,
+                key_cache, value_cache, slot_mapping,
+                num_tokens, num_kv_heads, head_dim, cache_block_size,
+                c_k, c_v, rotate != 0);
+        }
+#undef HALF
+    }
+#endif
+    else {
+        printf("call_flash_fp8_rot_store: unsupported dtype %d\n", (int)dtype);
+    }
+}
+
+extern "C" void call_flash_fp8_rot_decode(
+    const void* Q,
+    const void* K_cache, const void* V_cache,
+    void* O,
+    const int* block_tables, const int* seq_lens,
+    unsigned int max_blocks_per_seq,
+    unsigned int num_q_heads, unsigned int num_kv_heads,
+    unsigned int head_dim, unsigned int block_size,
+    float inv_sqrt_d, unsigned int q_stride,
+    float softcap, unsigned int sliding_window,
+    const float* k_scale_ptr, const float* v_scale_ptr,
+    unsigned long long fp8_cache_stride,
+    int rotate, int dtype, int64_t stream
+) {
+    cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
+    dim3 grid(num_q_heads, 1, 1);
+    if (dtype == 0) {
+#define HALF __half
+        if (head_dim <= 128) {
+            flash_fp8_rot_decode_128<HALF><<<grid, NUM_WARPS * WARP_SIZE, 0, s>>>(
+                (const HALF*)Q, K_cache, V_cache, (HALF*)O,
+                block_tables, seq_lens, max_blocks_per_seq,
+                num_q_heads, num_kv_heads, head_dim, block_size,
+                inv_sqrt_d, q_stride, softcap, sliding_window,
+                k_scale_ptr, v_scale_ptr, fp8_cache_stride, rotate != 0);
+        } else if (head_dim <= 256) {
+            flash_fp8_rot_decode_256<HALF><<<grid, NUM_WARPS * WARP_SIZE, 0, s>>>(
+                (const HALF*)Q, K_cache, V_cache, (HALF*)O,
+                block_tables, seq_lens, max_blocks_per_seq,
+                num_q_heads, num_kv_heads, head_dim, block_size,
+                inv_sqrt_d, q_stride, softcap, sliding_window,
+                k_scale_ptr, v_scale_ptr, fp8_cache_stride, rotate != 0);
+        } else {
+            flash_fp8_rot_decode_512<HALF><<<grid, NUM_WARPS * WARP_SIZE, 0, s>>>(
+                (const HALF*)Q, K_cache, V_cache, (HALF*)O,
+                block_tables, seq_lens, max_blocks_per_seq,
+                num_q_heads, num_kv_heads, head_dim, block_size,
+                inv_sqrt_d, q_stride, softcap, sliding_window,
+                k_scale_ptr, v_scale_ptr, fp8_cache_stride, rotate != 0);
+        }
+#undef HALF
+    }
+#ifndef NO_BF16_KERNEL
+    else if (dtype == 1) {
+#define HALF __nv_bfloat16
+        if (head_dim <= 128) {
+            flash_fp8_rot_decode_128<HALF><<<grid, NUM_WARPS * WARP_SIZE, 0, s>>>(
+                (const HALF*)Q, K_cache, V_cache, (HALF*)O,
+                block_tables, seq_lens, max_blocks_per_seq,
+                num_q_heads, num_kv_heads, head_dim, block_size,
+                inv_sqrt_d, q_stride, softcap, sliding_window,
+                k_scale_ptr, v_scale_ptr, fp8_cache_stride, rotate != 0);
+        } else if (head_dim <= 256) {
+            flash_fp8_rot_decode_256<HALF><<<grid, NUM_WARPS * WARP_SIZE, 0, s>>>(
+                (const HALF*)Q, K_cache, V_cache, (HALF*)O,
+                block_tables, seq_lens, max_blocks_per_seq,
+                num_q_heads, num_kv_heads, head_dim, block_size,
+                inv_sqrt_d, q_stride, softcap, sliding_window,
+                k_scale_ptr, v_scale_ptr, fp8_cache_stride, rotate != 0);
+        } else {
+            flash_fp8_rot_decode_512<HALF><<<grid, NUM_WARPS * WARP_SIZE, 0, s>>>(
+                (const HALF*)Q, K_cache, V_cache, (HALF*)O,
+                block_tables, seq_lens, max_blocks_per_seq,
+                num_q_heads, num_kv_heads, head_dim, block_size,
+                inv_sqrt_d, q_stride, softcap, sliding_window,
+                k_scale_ptr, v_scale_ptr, fp8_cache_stride, rotate != 0);
+        }
+#undef HALF
+    }
+#endif
+    else {
+        printf("call_flash_fp8_rot_decode: unsupported dtype %d\n", (int)dtype);
+    }
+}

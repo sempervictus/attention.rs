@@ -3594,6 +3594,49 @@ extern "C" {
     );
 
     #[cfg(feature = "flash")]
+    pub fn call_flash_fp8_rot_store(
+        key: *const c_void,
+        value: *const c_void,
+        key_cache: *mut c_void,
+        value_cache: *mut c_void,
+        slot_mapping: *const i64,
+        num_tokens: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        cache_block_size: u32,
+        c_k: f32,
+        c_v: f32,
+        rotate: i32,
+        dtype: i32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
+    pub fn call_flash_fp8_rot_decode(
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        o: *mut c_void,
+        block_tables: *const c_int,
+        seq_lens: *const c_int,
+        max_blocks_per_seq: u32,
+        num_q_heads: u32,
+        num_kv_heads: u32,
+        head_dim: u32,
+        block_size: u32,
+        inv_sqrt_d: f32,
+        q_stride: u32,
+        softcap: f32,
+        sliding_window: u32,
+        k_scale_ptr: *const f32,
+        v_scale_ptr: *const f32,
+        fp8_cache_stride: u64,
+        rotate: i32,
+        dtype: i32,
+        stream: i64,
+    );
+
+    #[cfg(feature = "flash")]
     pub fn call_flash_tq_store_k8v4(
         key: *const c_void,
         value: *const c_void,
