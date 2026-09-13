@@ -233,12 +233,13 @@ fn main() -> Result<()> {
         println!("cargo:rerun-if-changed=src/flashinfer_adapter_prefill.cu");
         println!("cargo:rerun-if-changed=src/flashinfer_prefill_fp8_fa2.cu");
         println!("cargo:rerun-if-changed=src/flashinfer_mla.cu");
-        // guoqingbao/flashinfer upstream branch: official DSV4 sparse MLA + GQA/FP8 patches
-        // Pin: github/upstream @ 0f06c230 (DSV4 sparse + GQA patches + fastdiv/flat compat)
+        // TEMPORARY: sempervictus/flashinfer branch with NVFP4 KV cache (PR #3748/#3608/#3640)
+        // Pin: 7629d218 (flashinfer-upstream-20260912)
+        // Will be replaced by guoqingbao/flashinfer once the PR lands upstream.
         builder = builder.arg("-DUSE_FLASHINFER").with_git_dependency(
             "flashinfer",
-            "https://github.com/guoqingbao/flashinfer.git",
-            "0f06c2305a276bcb704277705b32025575cb567f", // upstream + fastdiv/flat compat
+            "https://github.com/sempervictus/flashinfer.git",
+            "7629d2181a8858d7acd45820cb05f3098d76a895", // upstream + NVFP4 KV cache
             vec![
                 "include",
                 "include/flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export",
