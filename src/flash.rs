@@ -474,6 +474,7 @@ pub fn flash_nvfp4_kv_prefill(
     v_sf: &Tensor,
     block_tables: &Tensor,
     context_lens: &Tensor,
+    cu_seqlens_q: &Tensor,
     output: &Tensor,
     max_context_len: usize,
     num_q_heads: usize,
@@ -490,7 +491,7 @@ pub fn flash_nvfp4_kv_prefill(
     };
     let stream = get_cuda_stream(dev);
 
-    let num_seqs = query.dim(0)?;
+    let num_seqs = context_lens.dim(0)?;
     let block_size = k_fp4.dim(1)?;
     let q_stride = (num_q_heads * head_dim) as u32;
     let kv_stride = (num_kv_heads * head_dim) as u32;
@@ -518,6 +519,22 @@ pub fn flash_nvfp4_kv_prefill(
         };
         *s.slice(l.start_offset()..).device_ptr() as *const c_int
     };
+    let cu_ptr = {
+        let (s, l) = cu_seqlens_q.storage_and_layout();
+        let s = match &*s {
+            candle::Storage::Cuda(c) => c.as_cuda_slice::<u32>()?,
+            _ => candle::bail!("cu_seqlens_q must be CUDA"),
+        };
+        *s.slice(l.start_offset()..).device_ptr() as *const u32
+    };
+
+    // Max query length across sequences (host-side, from cu_seqlens_q).
+    let cu_host = cu_seqlens_q.to_device(&candle::Device::Cpu)?.to_vec1::<u32>()?;
+    let max_q_len = cu_host
+        .windows(2)
+        .map(|w| (w[1] as usize).saturating_sub(w[0] as usize))
+        .max()
+        .unwrap_or(0) as u32;
 
     let max_blocks_per_seq = block_tables.dim(1)? as u32;
     let sw = sliding_window.unwrap_or(0) as u32;
@@ -533,7 +550,9 @@ pub fn flash_nvfp4_kv_prefill(
             o_ptr,
             bt_ptr,
             cl_ptr,
+            cu_ptr,
             max_blocks_per_seq,
+            max_q_len,
             num_q_heads as u32,
             num_kv_heads as u32,
             head_dim as u32,
