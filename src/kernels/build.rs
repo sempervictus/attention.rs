@@ -237,7 +237,7 @@ fn main() -> Result<()> {
         builder = builder.arg("-DUSE_FLASHINFER").with_git_dependency(
             "flashinfer",
             "https://github.com/sempervictus/flashinfer.git",
-            "7629d2181a8858d7acd45820cb05f3098d76a895", // upstream + NVFP4 KV cache
+            "2bfb9334f2b773ee914e3e7765d5ca7d23829926", // upstream + NVFP4 KV cache
             vec![
                 "include",
                 "include/flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export",
