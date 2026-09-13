@@ -31,12 +31,15 @@ struct maximum<void> {
 #endif
 
 // FlashInfer fastdiv.cuh (commit 2bfb9334+) uses cuda::fast_mod_div<uint32_t>
-// from CCCL internals. This type is not publicly available in CUDA 12.x and
-// the header is not on the include path when using CUTLASS's bundled CUB.
-// Provide a minimal polyfill that falls back to regular integer division.
-// On CUDA 13+ (defined by -DCUDA_VERSION_13) the native CCCL type is
-// available; skip the polyfill.
-#if !defined(CUDA_VERSION_13) && !defined(_CUDA_STD_DETAIL_FAST_MATH_H) && !defined(CUDA_HAS_FAST_MOD_DIV)
+// from CCCL internals. This type is NOT on the default include path when
+// using CUTLASS's bundled CUB (which shadows the system CCCL headers),
+// regardless of CUDA version. Provide a minimal polyfill that falls back
+// to regular integer division.
+//
+// The guard checks for the CCCL internal header that defines the real type.
+// If it's already been included (e.g. CUDA <cuda/std/...> on CUDA 13+ with
+// full CCCL), the polyfill is skipped.
+#if !defined(_CUDA_STD_DETAIL_CORE_CORE_DEFS_H_) && !defined(FLASHINFER_CCCL_COMPAT_FAST_MOD_DIV)
 #define FLASHINFER_CCCL_COMPAT_FAST_MOD_DIV
 namespace cuda {
 template <typename T>
