@@ -157,7 +157,6 @@ __global__ void flash_nvfp4_kv_store(
         if (lane_id < lane_start || lane_id >= lane_start + NVFP4_LANES_PER_GROUP) continue;
 
         int local = lane_id - lane_start;
-        int elem_base = local * NVFP4_VEC;
 
         // Per-group absmax (each lane has NVFP4_VEC elements, group has NVFP4_LANES_PER_GROUP lanes)
         float local_max = 0.f;
@@ -177,17 +176,19 @@ __global__ void flash_nvfp4_kv_store(
         if (local == 0) {
             K_sf[sf_k_off + g] = sf_byte;
         }
-        // All lanes in the group read the same SF byte
-        sf_byte = K_sf[sf_k_off + g];
+        // All lanes in the group hold the same sf_byte (reduced via shfl above);
+        // use it directly instead of reading back from global (avoids a
+        // write/read race that zeroed the SF for non-local==0 lanes).
         float scale = e4m3_to_float_direct(sf_byte);
-        float inv_scale = (scale > 0.f) ? (6.0f / scale) : 0.f;
+        float inv_scale = (scale > 0.f) ? (1.0f / scale) : 0.f;
 
-        // Quantize to FP4 E2M1
+        // Quantize to FP4 E2M1. Lane lane_id holds elements [4*lane_id, 4*lane_id+3]
+        // in k_reg[0..3]; they map to bytes [2*lane_id, 2*lane_id+1] (2 codes/byte).
         #pragma unroll
         for (int i = 0; i < NVFP4_VEC; i += 2) {
-            uint8_t lo = nvfp4_float_to_e2m1(k_reg[elem_base + i] * inv_scale);
-            uint8_t hi = nvfp4_float_to_e2m1(k_reg[elem_base + i + 1] * inv_scale);
-            K_fp4[fp4_k_off + elem_base + i] = (hi << 4) | (lo & 0xF);
+            uint8_t lo = nvfp4_float_to_e2m1(k_reg[i] * inv_scale);
+            uint8_t hi = nvfp4_float_to_e2m1(k_reg[i + 1] * inv_scale);
+            K_fp4[fp4_k_off + 2 * lane_id + i / 2] = (hi << 4) | (lo & 0xF);
         }
     }
 
@@ -208,7 +209,6 @@ __global__ void flash_nvfp4_kv_store(
         if (lane_id < lane_start || lane_id >= lane_start + NVFP4_LANES_PER_GROUP) continue;
 
         int local = lane_id - lane_start;
-        int elem_base = local * NVFP4_VEC;
 
         float local_max = 0.f;
         #pragma unroll
@@ -225,15 +225,15 @@ __global__ void flash_nvfp4_kv_store(
         if (local == 0) {
             V_sf[sf_v_off + g] = sf_byte;
         }
-        sf_byte = V_sf[sf_v_off + g];
+        // Use the locally-reduced sf_byte directly (avoids the global read-back race).
         float scale = e4m3_to_float_direct(sf_byte);
-        float inv_scale = (scale > 0.f) ? (6.0f / scale) : 0.f;
+        float inv_scale = (scale > 0.f) ? (1.0f / scale) : 0.f;
 
         #pragma unroll
         for (int i = 0; i < NVFP4_VEC; i += 2) {
-            uint8_t lo = nvfp4_float_to_e2m1(v_reg[elem_base + i] * inv_scale);
-            uint8_t hi = nvfp4_float_to_e2m1(v_reg[elem_base + i + 1] * inv_scale);
-            V_fp4[fp4_v_off + elem_base + i] = (hi << 4) | (lo & 0xF);
+            uint8_t lo = nvfp4_float_to_e2m1(v_reg[i] * inv_scale);
+            uint8_t hi = nvfp4_float_to_e2m1(v_reg[i + 1] * inv_scale);
+            V_fp4[fp4_v_off + 2 * lane_id + i / 2] = (hi << 4) | (lo & 0xF);
         }
     }
 }
