@@ -39,7 +39,7 @@ struct maximum<void> {
 // CCCL timeline:
 //   CUDA 12.0 (CCCL 2.0): cuda::fast_mod_div introduced as internal type
 //   CUDA 13.0 (CCCL 3.0): promoted to public <cuda/std> header
-// __CUDACC_VER_MAJOR__ < 13
+#if __CUDACC_VER_MAJOR__ < 13
 namespace cuda {
 template <typename T>
 struct fast_mod_div {
