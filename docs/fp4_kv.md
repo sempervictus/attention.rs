@@ -214,3 +214,29 @@ NVIDIA CUTLASS 4.5.2, SM120 block-scaled GEMM
 (OpClassBlockScaledTensorOp, float_e2m1_t + float_ue8m0_t).
 Referenced for the hardware path (future optimization);
 this branch uses the software LUT path for decode.
+
+## CUDA Version Gating
+
+The FlashInfer dependency (commit 2bfb9334+) references CCCL types (`cuda::fast_mod_div`, `cuda::maximum`) that
+are only on the default include path in CUDA 13.0+.
+In CUDA 12.x, libcu++ ships as a separate package and is
+not found when CUTLASS's bundled CUB is used.
+
+`src/kernels/src/flashinfer_cccl_compat.h` provides
+polyfills for both types, guarded by:
+
+    #if !defined(CUDA_VERSION_13) && !defined(_CUDA_STD_DETAIL_FAST_MATH_H)
+
+- CUDA 12.x: polyfill is active (CCCL types unavailable)
+- CUDA 13+: polyfill is skipped (native CCCL types found)
+
+`build.rs` detects the CUDA major version via `nvcc --version`
+and sets `-DCUDA_VERSION_13` when >= 13. The minimum
+supported CUDA version for this project is 12.6 (per
+Dockerfile base image nvidia/cuda:12.9.1).
+
+The NVFP4 KV cache kernels themselves (store, decode,
+prefill) have no CCCL dependency and build cleanly on
+CUDA 12.6+. Only the FlashInfer adapter files
+(flashinfer_adapter_decode.cu, flashinfer_prefill_fp8_fa2.cu,
+flashinfer_adapter_prefill.cu) require the polyfill.
