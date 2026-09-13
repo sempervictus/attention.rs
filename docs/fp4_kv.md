@@ -184,6 +184,32 @@ The `c_k` and `c_v` parameters scale the E4M3 block:
 | `src/kernels/src/flash/flash_turboquant_lowbit.cuh` | TQ4 store (c_k/c_v added) |
 | `src/tq4_c_tests.rs` | 4 unit tests for TQ4 c_k/c_v |
 
+## CUDA Version Gating
+
+The FlashInfer dependency (commit 2bfb9334+) references CCCL types
+(`cuda::fast_mod_div`, `cuda::maximum`) that have different
+availability depending on the CUDA toolkit version:
+
+- CUDA 12.x (CCCL 2.x): `cuda::fast_mod_div` is an internal type,
+  not on the default include path when CUTLASS's bundled CUB is
+  active. Our polyfill in `flashinfer_cccl_compat.h` provides it.
+  Guarded by `#if __CUDACC_VER_MAJOR__ < 13`.
+
+- CUDA 13+ (CCCL 3.0): `cuda::fast_mod_div` is a public type in
+  `<cuda/std/...>`, always on the include path. The polyfill is
+  skipped to avoid an ambiguous overload.
+
+Minimum supported CUDA: 12.6 (per Dockerfile base image
+nvidia/cuda:12.9.1). The NVFP4 KV cache kernels themselves have
+no CCCL dependency and build cleanly on any CUDA 12.0+.
+
+The `cuda::maximum` polyfill (for the TRT-LLM quantization path)
+is guarded by `#ifndef _CUDA_FUNCTIONAL_MAXIMUM_H` which is the
+include guard for `<cuda/functional>`. On CUDA 13+ this header is
+always available, so the polyfill is skipped. On CUDA 12.x with
+CUTLASS's bundled CUB, it may be missing, so the polyfill is
+active.
+
 ## Citations
 
 Chakrabarti et al., "UltraQuant: 4-bit KV Caching for
