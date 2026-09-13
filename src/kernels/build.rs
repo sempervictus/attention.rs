@@ -113,6 +113,31 @@ fn main() -> Result<()> {
     let trtllm_enabled = std::env::var("CARGO_FEATURE_TRTLLM").is_ok();
     let flash_enabled = std::env::var("CARGO_FEATURE_FLASH").is_ok();
 
+    // Detect CUDA toolkit major version for feature gating.
+    // CCCL types (cuda::fast_mod_div, cuda::maximum) are native in CUDA 13+.
+    // On CUDA 12.x our flashinfer_cccl_compat.h polyfills them.
+    let cuda_major: u32 = {
+        let mut major = 12u32;
+        if let Ok(out) = std::process::Command::new("nvcc")
+            .arg("--version")
+            .output()
+        {
+            if let Ok(text) = String::from_utf8(out.stdout) {
+                if let Some(line) = text.lines().find(|l| l.contains("release")) {
+                    if let Some(release) = line.split("release ").nth(1) {
+                        if let Some(ver_str) = release.split(',').next() {
+                            if let Ok(ver) = ver_str.trim().parse::<f32>() {
+                                major = ver as u32;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        major
+    };
+    println!("cargo:info=CUDA toolkit major version: {}", cuda_major);
+
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default());
 
     let mut builder = KernelBuilder::new()
@@ -120,6 +145,10 @@ fn main() -> Result<()> {
         .nvcc_thread_patterns(&["flash_api", "flash_decode", "cutlass", "flashinfer"], 2)
         .arg("--expt-relaxed-constexpr")
         .arg("-O3");
+
+    if cuda_major >= 13 {
+        builder = builder.arg("-DCUDA_VERSION_13");
+    }
 
     if !trtllm_enabled {
         builder = builder.exclude(&["trtllm/*"]);
