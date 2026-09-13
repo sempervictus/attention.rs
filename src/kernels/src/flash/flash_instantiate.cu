@@ -1739,8 +1739,8 @@ extern "C" void call_flash_nvfp4_kv_prefill(
     const void* K_fp4, const void* K_sf,
     const void* V_fp4, const void* V_sf,
     void* O,
-    const int* block_tables, const int* seq_lens,
-    unsigned int max_blocks_per_seq,
+    const int* block_tables, const int* seq_lens, const unsigned int* cu_seqlens_q,
+    unsigned int max_blocks_per_seq, unsigned int max_q_len,
     unsigned int num_q_heads, unsigned int num_kv_heads,
     unsigned int head_dim, unsigned int block_size,
     float inv_sqrt_d, unsigned int num_seqs,
@@ -1749,28 +1749,28 @@ extern "C" void call_flash_nvfp4_kv_prefill(
     int rotate, int dtype, int64_t stream
 ) {
     cudaStream_t s = reinterpret_cast<cudaStream_t>(stream);
-    dim3 grid((max_blocks_per_seq > 0 ? max_blocks_per_seq : 1), num_kv_heads, num_seqs);
+    dim3 grid((max_q_len > 0 ? max_q_len : 1), num_q_heads, num_seqs);
     if (dtype == 0) {
 #define HALF __half
         if (head_dim <= 128) {
             flash_nvfp4_kv_prefill_128<HALF><<<grid, NVFP4_PREFILL_THREADS, 0, s>>>(
                 (const HALF*)Q, (const unsigned char*)K_fp4, (const unsigned char*)K_sf,
                 (const unsigned char*)V_fp4, (const unsigned char*)V_sf,
-                (HALF*)O, block_tables, seq_lens, max_blocks_per_seq,
+                (HALF*)O, block_tables, seq_lens, cu_seqlens_q, max_blocks_per_seq,
                 num_q_heads, num_kv_heads, head_dim, block_size,
                 inv_sqrt_d, num_seqs, q_stride, kv_stride, softcap, sliding_window, rotate != 0);
         } else if (head_dim <= 256) {
             flash_nvfp4_kv_prefill_256<HALF><<<grid, NVFP4_PREFILL_THREADS, 0, s>>>(
                 (const HALF*)Q, (const unsigned char*)K_fp4, (const unsigned char*)K_sf,
                 (const unsigned char*)V_fp4, (const unsigned char*)V_sf,
-                (HALF*)O, block_tables, seq_lens, max_blocks_per_seq,
+                (HALF*)O, block_tables, seq_lens, cu_seqlens_q, max_blocks_per_seq,
                 num_q_heads, num_kv_heads, head_dim, block_size,
                 inv_sqrt_d, num_seqs, q_stride, kv_stride, softcap, sliding_window, rotate != 0);
         } else {
             flash_nvfp4_kv_prefill_512<HALF><<<grid, NVFP4_PREFILL_THREADS, 0, s>>>(
                 (const HALF*)Q, (const unsigned char*)K_fp4, (const unsigned char*)K_sf,
                 (const unsigned char*)V_fp4, (const unsigned char*)V_sf,
-                (HALF*)O, block_tables, seq_lens, max_blocks_per_seq,
+                (HALF*)O, block_tables, seq_lens, cu_seqlens_q, max_blocks_per_seq,
                 num_q_heads, num_kv_heads, head_dim, block_size,
                 inv_sqrt_d, num_seqs, q_stride, kv_stride, softcap, sliding_window, rotate != 0);
         }
@@ -1783,21 +1783,21 @@ extern "C" void call_flash_nvfp4_kv_prefill(
             flash_nvfp4_kv_prefill_128<HALF><<<grid, NVFP4_PREFILL_THREADS, 0, s>>>(
                 (const HALF*)Q, (const unsigned char*)K_fp4, (const unsigned char*)K_sf,
                 (const unsigned char*)V_fp4, (const unsigned char*)V_sf,
-                (HALF*)O, block_tables, seq_lens, max_blocks_per_seq,
+                (HALF*)O, block_tables, seq_lens, cu_seqlens_q, max_blocks_per_seq,
                 num_q_heads, num_kv_heads, head_dim, block_size,
                 inv_sqrt_d, num_seqs, q_stride, kv_stride, softcap, sliding_window, rotate != 0);
         } else if (head_dim <= 256) {
             flash_nvfp4_kv_prefill_256<HALF><<<grid, NVFP4_PREFILL_THREADS, 0, s>>>(
                 (const HALF*)Q, (const unsigned char*)K_fp4, (const unsigned char*)K_sf,
                 (const unsigned char*)V_fp4, (const unsigned char*)V_sf,
-                (HALF*)O, block_tables, seq_lens, max_blocks_per_seq,
+                (HALF*)O, block_tables, seq_lens, cu_seqlens_q, max_blocks_per_seq,
                 num_q_heads, num_kv_heads, head_dim, block_size,
                 inv_sqrt_d, num_seqs, q_stride, kv_stride, softcap, sliding_window, rotate != 0);
         } else {
             flash_nvfp4_kv_prefill_512<HALF><<<grid, NVFP4_PREFILL_THREADS, 0, s>>>(
                 (const HALF*)Q, (const unsigned char*)K_fp4, (const unsigned char*)K_sf,
                 (const unsigned char*)V_fp4, (const unsigned char*)V_sf,
-                (HALF*)O, block_tables, seq_lens, max_blocks_per_seq,
+                (HALF*)O, block_tables, seq_lens, cu_seqlens_q, max_blocks_per_seq,
                 num_q_heads, num_kv_heads, head_dim, block_size,
                 inv_sqrt_d, num_seqs, q_stride, kv_stride, softcap, sliding_window, rotate != 0);
         }
