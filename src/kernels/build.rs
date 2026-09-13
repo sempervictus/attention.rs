@@ -110,6 +110,7 @@ fn main() -> Result<()> {
     let marlin_disabled = std::env::var("CARGO_FEATURE_NO_MARLIN").is_ok();
     let fp8_kvcache_disabled = std::env::var("CARGO_FEATURE_NO_FP8_KVCACHE").is_ok();
     let trtllm_enabled = std::env::var("CARGO_FEATURE_TRTLLM").is_ok();
+    let flash_enabled = std::env::var("CARGO_FEATURE_FLASH").is_ok();
 
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default());
 
@@ -118,8 +119,6 @@ fn main() -> Result<()> {
         .nvcc_thread_patterns(&["flash_api", "flash_decode", "cutlass", "flashinfer"], 2)
         .arg("--expt-relaxed-constexpr")
         .arg("-O3");
-
-    let flash_enabled = std::env::var("CARGO_FEATURE_FLASH").is_ok();
 
     if !trtllm_enabled {
         builder = builder.exclude(&["trtllm/*"]);
@@ -244,23 +243,32 @@ fn main() -> Result<()> {
                 "include/flashinfer/trtllm/batched_gemm/trtllmGen_bmm_export",
                 "include/flashinfer/trtllm/gemm/trtllmGen_gemm_export",
                 "include/flashinfer/attention/sparse_mla_sm120",
-                "csrc/nv_internal",
+                "include/flashinfer/attention/sm120/nvfp4_attention_sm120",
                 "csrc/nv_internal/include",
-                "csrc/nv_internal/tensorrt_llm/cutlass_extensions/include",
             ],
-            vec![
-                "csrc/nv_internal/cpp/common",
-                "csrc/nv_internal/tensorrt_llm",
-                "csrc/sparse_mla_sm120_decode_dsv4.cu",
-            ],
+            vec![],
             false,
         );
-
+        builder = builder.arg("-DFLASHINFER_MLA_DISABLED"); // MLAPlan API changed in this revision
+        // Add the new FlashInfer header path manually (c via with_git_dependency
+        // to avoid fetching broken internal source files)
         let flashinfer_root = builder.fetch_git_dependency("flashinfer")?;
         let csrc_dir = flashinfer_root.join("csrc");
+        let trtllm_include = csrc_dir.join("nv_internal").join("include");
+        if trtllm_include.exists() {
+            builder = builder.include_path(&trtllm_include);
+        }
+        // Exclude broken internal source files from the new FlashInfer layout
+        builder = builder.exclude(&[
+            "csrc/nv_internal/cpp/common/*",
+            "csrc/nv_internal/tensorrt_llm/*",
+        ]);
+
         let trtllm_dir = csrc_dir.join("nv_internal").join("tensorrt_llm");
 
-        if compute_cap >= 90 && trtllm_dir.exists() {
+        // New FlashInfer layout broke tensorrt_llm includes. Disable blockscale
+// path until the new reorganization is resolved upstream.
+        if false && compute_cap >= 90 && trtllm_dir.exists() {
             let include_define = format!(
                 "-DATTENTION_RS_FLASHINFER_TRTLLM_INCLUDE_DIR=\\\"{}\\\"",
                 trtllm_dir.display()
@@ -272,17 +280,8 @@ fn main() -> Result<()> {
                 .arg(&include_define)
                 .include_path(csrc_dir.join("nv_internal/tensorrt_llm/kernels/cutlass_kernels/include"))
                 .include_path(csrc_dir.join("nv_internal/tensorrt_llm/kernels/cutlass_kernels"))
-                .source_files(vec![
-                    csrc_dir.join(
-                        "nv_internal/tensorrt_llm/kernels/cutlass_kernels/fp8_blockscale_gemm/fp8_blockscale_gemm.cu",
-                    ),
-                    csrc_dir.join("nv_internal/cpp/common/envUtils.cpp"),
-                    csrc_dir.join("nv_internal/cpp/common/logger.cpp"),
-                    csrc_dir.join("nv_internal/cpp/common/stringUtils.cpp"),
-                    csrc_dir.join("nv_internal/cpp/common/tllmException.cpp"),
-                    csrc_dir.join("nv_internal/cpp/common/memoryUtils.cu"),
-                    csrc_dir.join("nv_internal/tensorrt_llm/kernels/cutlass_kernels/cutlass_heuristic.cpp"),
-                ]);
+                .include_path(csrc_dir.join("nv_internal/include"))
+                // Blockscale path disabled: new FlashInfer layout breaks tensorrt_llm includes
         } else if compute_cap >= 90 {
             println!(
                 "cargo:warning=flashinfer TensorRT-LLM sources not found at {}, skipping blockscale fp8 wrapper",
@@ -306,7 +305,10 @@ fn main() -> Result<()> {
         if let Ok(flashinfer_root) = builder.fetch_git_dependency("flashinfer") {
             let csrc_dir = flashinfer_root.join("csrc");
             let quant_cu = csrc_dir.join("nv_internal/cpp/kernels/quantization.cu");
-            if quant_cu.exists() {
+            // New FlashInfer layout removed cudaTypeUtils.cuh which quantization.cu needs.
+            // Skip this path; our local nvfp4_quant.cu has its own implementation.
+            let _ = quant_cu;
+            if false {
                 // Do not use global nvcc `-include`: extra_args apply to every
                 // kernel. A `cuda::maximum` polyfill would then redeclare CCCL
                 // types on CUDA 13. Wrap only this translation unit.
@@ -329,7 +331,10 @@ fn main() -> Result<()> {
                 );
             }
             let dsv4_cu = csrc_dir.join("sparse_mla_sm120_decode_dsv4.cu");
-            if dsv4_cu.exists() {
+            // DSV4 sparse MLA references FlashInfer internal symbols not compiled
+            // in the new layout. Disable until upstream resolves the include paths.
+            let _ = dsv4_cu;
+            if false {
                 builder = builder
                     .arg("-DATTENTION_RS_USE_FLASHINFER_SPARSE_MLA_SM120")
                     .source_files(vec![dsv4_cu]);

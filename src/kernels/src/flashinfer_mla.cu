@@ -6,10 +6,11 @@
 #include <stdio.h>
 
 #ifdef USE_FLASHINFER
+#ifndef FLASHINFER_MLA_DISABLED
 
 #include <flashinfer/attention/decode.cuh>
 #include <flashinfer/attention/default_decode_params.cuh>
-#include <flashinfer/attention/scheduler.cuh>
+#include <flashinfer/attention/scheduler.cuh>>
 #include <flashinfer/attention/mla.cuh>
 #include <flashinfer/attention/mla_params.cuh>
 #include <flashinfer/page.cuh>
@@ -440,4 +441,5 @@ void flashinfer_mla_prefill_run_wrapper(
 
 } // extern "C"
 
+#endif // FLASHINFER_MLA_DISABLED
 #endif // USE_FLASHINFER
