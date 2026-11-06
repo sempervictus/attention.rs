@@ -50,8 +50,31 @@ pub struct PdaPushdownTable {
     pub start_state: u32,
     /// The start stack symbol (bottom marker).
     pub start_stack: u32,
-    /// Words per VOB (ceil(num_inputs / 32)).
+    /// Words per VOB (ceil(vocab_size / 32), the token-level VOB). The VOB is over
+    /// token IDs (0..vocab_size), not the PDA's abstract terminal IDs (0..num_inputs).
+    /// The bridge lift (the scan_mask terminal→token) produces a token-level VOB.
     pub words_per_vob: u32,
+    /// The model's token vocab size (the VOB index space). The `scan_mask` lifts
+    /// the terminal-level mask (0..num_inputs) to the token-level mask (0..vocab_size)
+    /// via the `terminal_token_bridge`.
+    pub vocab_size: u32,
+    /// The terminal → token bridge (the flat [num_terminals * max_bridge_len] U32 array).
+    /// `bridge_flat[t * max_bridge_len + i]` = the i-th token of terminal `t`
+    /// (the `u32::MAX` sentinel = padding). The `None` when the PDA is built
+    /// directly over token IDs (the num_inputs == vocab_size, the no bridge needed).
+    pub terminal_token_bridge: Option<Tensor>,
+    /// The per-terminal token count (the [num_terminals] U32 array). The bridge lift
+    /// iterates `bridge_lens[t]` tokens for terminal `t`.
+    pub bridge_lens: Option<Tensor>,
+    /// The max tokens per terminal (the bridge_flat row width).
+    pub max_bridge_len: u32,
+    /// The reverse bridge (token → terminal ID), as a GPU tensor [vocab_size] U32.
+    /// `token_to_terminal[tok]` = the terminal ID that token `tok` belongs to.
+    /// The kernel uses this to map the sampled token back to its terminal ID before
+    /// `advance_pda` (the PDA's input alphabet is terminals, not tokens). The
+    /// `None` when num_inputs == vocab_size (the PDA built directly over token
+    /// IDs, the no reverse bridge needed — the token ID IS the terminal ID).
+    pub token_to_terminal: Option<Tensor>,
     /// Max stack depth (the bounded pushdown).
     pub max_stack_depth: u32,
     /// Whether the machine is deterministic (a DPDA). The GPU settled-mask kernels
@@ -91,9 +114,15 @@ impl PdaPushdownTable {
         max_stack_depth: u32,
         is_deterministic: bool,
         max_closure_width: u32,
+        vocab_size: u32,
+        bridge_flat: Option<Vec<u32>>,
+        bridge_lens: Option<Vec<u32>>,
+        max_bridge_len: u32,
+        token_to_terminal: Option<Vec<u32>>,
         device: &candle_core::Device,
     ) -> Result<Self> {
-        let words_per_vob = (num_inputs + 31) / 32;
+        // The token-level VOB (the vocab size, the no the abstract terminal count).
+        let words_per_vob = ((vocab_size.max(num_inputs) + 31) / 32) as u32;
         let n_transitions = transitions.len();
         let n_accepting = accepting.len();
         // Compute the CSR index: for each ctrl state, the starting record index
@@ -135,6 +164,17 @@ impl PdaPushdownTable {
             start_state,
             start_stack,
             words_per_vob,
+            vocab_size,
+            terminal_token_bridge: bridge_flat.as_ref()
+                .map(|b| Tensor::from_vec(b.clone(), (b.len(),), device).ok())
+                .flatten(),
+            bridge_lens: bridge_lens.as_ref()
+                .map(|b| Tensor::from_vec(b.clone(), (b.len(),), device).ok())
+                .flatten(),
+            max_bridge_len,
+            token_to_terminal: token_to_terminal.as_ref()
+                .map(|b| Tensor::from_vec(b.clone(), (b.len(),), device).ok())
+                .flatten(),
             max_stack_depth,
             is_deterministic,
             max_closure_width,
@@ -171,9 +211,14 @@ impl PdaPushdownTable {
             machine.transitions.len() as u32,
             machine.start_state,
             machine.start_stack,
-            8, // the bounded stack depth (the D).
+            machine.max_stack_depth() as u32,
             machine.is_deterministic(),
             machine.max_closure_width() as u32,
+            pkg.vocab_size,
+            pkg.bridge_flat.clone(),
+            pkg.bridge_lens.clone(),
+            pkg.max_bridge_len,
+            pkg.token_to_terminal.clone(),
             device,
         )
     }
@@ -277,6 +322,20 @@ impl PdaPushdownTable {
         let p_accept = Self::ptr_u32(&self.accepting)?;
         let p_ctrl_offsets = Self::ptr_u32(&self.ctrl_offsets)?;
         let p_ctrl_counts = Self::ptr_u32(&self.ctrl_counts)?;
+        // The terminal → token bridge (the lift from the PDA's abstract terminal
+        // IDs to the model's token IDs). The null when the PDA is built directly
+        // over token IDs (the num_inputs == vocab_size, the no bridge needed).
+        let p_bridge_flat: *const u32 = self.terminal_token_bridge.as_ref()
+            .map(|t| Self::ptr_u32(t)).transpose()?.unwrap_or(std::ptr::null());
+        let p_bridge_lens: *const u32 = self.bridge_lens.as_ref()
+            .map(|t| Self::ptr_u32(t)).transpose()?.unwrap_or(std::ptr::null());
+        // The reverse bridge (token → terminal ID). The kernel maps the sampled
+        // token back to its terminal ID before `advance_pda` (the PDA's input
+        // alphabet is terminals, not tokens). The null when num_inputs ==
+        // vocab_size (the PDA built directly over token IDs, the no reverse
+        // bridge needed — the token ID IS the terminal ID).
+        let p_token_to_terminal: *const u32 = self.token_to_terminal.as_ref()
+            .map(|t| Self::ptr_u32(t)).transpose()?.unwrap_or(std::ptr::null());
 
         unsafe {
             match logits.dtype() {
@@ -286,6 +345,8 @@ impl PdaPushdownTable {
                         p_logits, p_ctrl, p_stack, p_sp,
                         p_out_ctrl, p_out_sp, p_out_tokens,
                         p_trans, p_accept, p_ctrl_offsets, p_ctrl_counts, p_vob_buf, p_forbid,
+                        p_bridge_flat, p_bridge_lens, self.max_bridge_len,
+                        p_token_to_terminal,
                         self.num_states, self.num_stack_syms, self.num_inputs,
                         words, batch as i32, vocab as i32,
                         k, temp, topp, seed, d as i32, stream,
@@ -297,6 +358,8 @@ impl PdaPushdownTable {
                         p_logits, p_ctrl, p_stack, p_sp,
                         p_out_ctrl, p_out_sp, p_out_tokens,
                         p_trans, p_accept, p_ctrl_offsets, p_ctrl_counts, p_vob_buf, p_forbid,
+                        p_bridge_flat, p_bridge_lens, self.max_bridge_len,
+                        p_token_to_terminal,
                         self.num_states, self.num_stack_syms, self.num_inputs,
                         words, batch as i32, vocab as i32,
                         k, temp, topp, seed, d as i32, stream,
@@ -347,6 +410,19 @@ impl PdaPushdownTable {
         let p_accept = Self::ptr_u32(&self.accepting)?;
         let p_ctrl_offsets = Self::ptr_u32(&self.ctrl_offsets)?;
         let p_ctrl_counts = Self::ptr_u32(&self.ctrl_counts)?;
+        // The terminal → token bridge (the lift from the PDA's abstract terminal
+        // IDs to the model's token IDs). The null when the PDA is built directly
+        // over token IDs (the num_inputs == vocab_size, the no bridge needed).
+        let p_bridge_flat: *const u32 = self.terminal_token_bridge.as_ref()
+            .map(|t| Self::ptr_u32(t)).transpose()?.unwrap_or(std::ptr::null());
+        let p_bridge_lens: *const u32 = self.bridge_lens.as_ref()
+            .map(|t| Self::ptr_u32(t)).transpose()?.unwrap_or(std::ptr::null());
+        // The reverse bridge (token → terminal ID). The kernel maps the drafted
+        // token back to its terminal ID before `advance_pda` (the PDA's input
+        // alphabet is terminals, not tokens). The null when num_inputs ==
+        // vocab_size (the PDA built directly over token IDs).
+        let p_token_to_terminal: *const u32 = self.token_to_terminal.as_ref()
+            .map(|t| Self::ptr_u32(t)).transpose()?.unwrap_or(std::ptr::null());
         // The optional anti-loop kick (the anchor-only forbid, the UINT32_MAX
         // sentinel = no-kick). Null when absent.
         let p_forbid: *const u32 = match forbid {
@@ -358,6 +434,8 @@ impl PdaPushdownTable {
             ffi::pda_fused_project_masks(
                 p_ctrl, p_stack, p_sp, p_draft, p_out,
                 p_trans, p_accept, p_ctrl_offsets, p_ctrl_counts, p_forbid, p_k_actual,
+                p_bridge_flat, p_bridge_lens, self.max_bridge_len,
+                p_token_to_terminal,
                 self.num_states, self.num_stack_syms, self.num_inputs,
                 self.words_per_vob, batch as i32, k_max as i32, d as i32, stream,
             );
@@ -743,5 +821,66 @@ mod tests {
             assert_eq!(*g, *c, "realistic-vocab mismatch at {i}");
         }
         println!("PDA vob_to_allow realistic vocab ({vocab}) matches the CPU reference");
+    }
+
+    /// The bridge→token bridge lift bit-alignment proof (the CPU, no GPU).
+    ///
+    /// Replicates the exact `scan_mask` lift logic from pda.cu: the terminal VOB
+    /// (0..num_inputs) is lifted to the token VOB (0..vocab_size) via the bridge.
+    /// Proves that a forbidden token (one not in any allowed terminal's bridge
+    /// set) has its bit CLEAR in the token VOB (the -inf at sampling), + an
+    /// allowed token has its bit SET. This is the algorithm-side proof of the kernel
+    /// logic (the CUDA kernel can't run here, no GPU).
+    #[test]
+    fn pda_bridge_lift_bit_alignment() {
+        // The tiny PDA: 2 terminals. Terminal 0 = {token 5, 6}, terminal 1 = {token 7}.
+        let num_inputs = 2;
+        let vocab_size = 8u32; // tokens 0..7
+        let words_per_vob = ((vocab_size + 31) / 32) as u32; // 1 word
+        let max_bridge_len = 2;
+        // The bridge: terminal 0 → [5, 6], terminal 1 → [7, SENT].
+        let bridge_flat = vec![5u32, 6, 7, u32::MAX];
+        let bridge_lens = vec![2u32, 1];
+
+        // Simulate the scan_mask terminal VOB: terminal 0 allowed (bit 0 set).
+        let mut term_vob = vec![0u32; 1]; // the num_inputs/32 = 1 word
+        term_vob[0] |= 1u32 << 0; // terminal 0 allowed
+
+        // The bridge lift (the exact pda.cu scan_mask logic, lines 205-219).
+        let mut token_vob = vec![0u32; words_per_vob as usize];
+        for t in 0..num_inputs {
+            let tw = t / 32;
+            if tw >= term_vob.len() as u32 { break; }
+            if (term_vob[tw as usize] & (1u32 << (t % 32))) == 0 { continue; } // the terminal not allowed
+            let blen = bridge_lens[t as usize];
+            let bbase = &bridge_flat[t as usize * max_bridge_len..];
+            for i in 0..blen as usize {
+                let tok = bbase[i];
+                if tok == u32::MAX { break; } // the sentinel
+                if tok < vocab_size {
+                    token_vob[tok as usize / 32] |= 1u32 << (tok as usize % 32);
+                }
+            }
+        }
+
+        // The assertions (the bit alignment proof):
+        // Token 5 + 6 are allowed (terminal 0's bridge set).
+        assert_eq!(token_vob[0] & (1u32 << 5), 1u32 << 5, "token 5 must be allowed (terminal 0's bridge)");
+        assert_eq!(token_vob[0] & (1u32 << 6), 1u32 << 6, "token 6 must be allowed (terminal 0's bridge)");
+        // Token 7 is forbidden (terminal 1 not allowed in this config).
+        assert_eq!(token_vob[0] & (1u32 << 7), 0, "token 7 must be forbidden (terminal 1 not allowed)");
+        // Tokens 0-4 are forbidden (not in any allowed terminal's bridge).
+        for tok in 0..5u32 {
+            assert_eq!(token_vob[0] & (1u32 << tok), 0, "token {tok} must be forbidden");
+        }
+
+        // The vob_to_allow expansion (the pda.cu:459 logic, the CPU reference):
+        // token i is allowed iff token_vob[i/32] bit (i%32) is set.
+        for tok in 0..vocab_size {
+            let allowed = (token_vob[tok as usize / 32] >> (tok as usize % 32)) & 1u32 == 1;
+            let expected = matches!(tok, 5 | 6); // only tokens 5, 6 are allowed
+            assert_eq!(allowed, expected, "token {tok}: allowed={allowed} expected={expected} (the bit alignment)");
+        }
+        println!("PDA bridge lift bit-alignment proof (CPU): terminal 0 → tokens {{5,6}}, tokens 0-4,7 forbidden");
     }
 }

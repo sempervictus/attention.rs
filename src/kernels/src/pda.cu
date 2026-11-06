@@ -32,6 +32,14 @@ __device__ __forceinline__ float pda_logit_to_float<__nv_bfloat16>(const __nv_bf
 // The epsilon-closure (the C2 fix): the BFS over the (state, top) configs via the
 // epsilon moves, collecting the terminal inputs from every reachable config.
 // Matches the CPU mask_at_cfg (the epsilon-closure, the push.first() new-top).
+//
+// The terminal → token lift (the bridge): the PDA's abstract terminal IDs
+// (0..num_inputs) are lifted to the model's token IDs (0..vocab_size) via the
+// terminal_token_bridge. The out_vob is token-sized (words_per_vob =
+// ceil(vocab_size/32)); the terminal bits are collected into a local term_vob,
+// then lifted into out_vob via the bridge. The no bridge (the num_inputs ==
+// vocab_size, the PDA built directly over token IDs) copies the term_vob
+// directly.
 __device__ void scan_mask(
     const uint32_t* __restrict__ transitions,
     const uint32_t* __restrict__ ctrl_u32_offsets,
@@ -40,11 +48,18 @@ __device__ void scan_mask(
     uint32_t ctrl,
     uint32_t top,
     uint32_t* __restrict__ out_vob,
-    uint32_t words_per_vob)
+    uint32_t words_per_vob,
+    const uint32_t* __restrict__ bridge_flat,
+    const uint32_t* __restrict__ bridge_lens,
+    uint32_t max_bridge_len)
 {
     for (uint32_t w = 0; w < words_per_vob; w++) {
         out_vob[w] = 0;
     }
+    // The terminal-level VOB (the PDA's abstract inputs, over 0..num_inputs).
+    uint32_t term_vob[64]; // the num_inputs/32 words (the MAXF=64 cap)
+    uint32_t term_words = (num_inputs + 31) / 32;
+    for (uint32_t w = 0; w < term_words; w++) term_vob[w] = 0;
     // the BFS over the (state, top) configs (the epsilon closure).
     const int MAXF = 64;
     uint32_t fq[MAXF], ft[MAXF];
@@ -61,10 +76,10 @@ __device__ void scan_mask(
             uint32_t push_len = transitions[idx + 4];
             if (t == ctop) {
                 if (a < num_inputs) {
-                    // the terminal move: collect the input.
+                    // the terminal move: collect the input (the terminal bit).
                     uint32_t word_idx = a / 32;
-                    if (word_idx < words_per_vob) {
-                        out_vob[word_idx] |= (1u << (a % 32));
+                    if (word_idx < term_words) {
+                        term_vob[word_idx] |= (1u << (a % 32));
                     }
                 } else {
                     // the epsilon move: follow it (the new_top = the push[0], the
@@ -80,6 +95,31 @@ __device__ void scan_mask(
                 }
             }
             idx += 5 + push_len;
+        }
+    }
+    // The terminal → token lift (the bridge). The out_vob is token-sized; the
+    // term_vob is terminal-sized. For each allowed terminal, OR its bridge token
+    // set into the token VOB.
+    if (bridge_flat != nullptr && bridge_lens != nullptr) {
+        for (uint32_t t = 0; t < num_inputs; t++) {
+            uint32_t tw = t / 32;
+            if (tw >= term_words) break;
+            if ((term_vob[tw] & (1u << (t % 32))) == 0) continue; // the terminal not allowed
+            uint32_t blen = bridge_lens[t];
+            const uint32_t* bbase = bridge_flat + (size_t)t * max_bridge_len;
+            for (uint32_t i = 0; i < blen; i++) {
+                uint32_t tok = bbase[i];
+                if (tok == UINT32_MAX) break; // the sentinel (the padding)
+                if (tok < (uint32_t)words_per_vob * 32) {
+                    out_vob[tok / 32] |= (1u << (tok % 32));
+                }
+            }
+        }
+    } else {
+        // The no bridge (the num_inputs == vocab_size, the PDA built directly over
+        // token IDs). The term VOB IS the token VOB (the copy, the no lift).
+        for (uint32_t w = 0; w < words_per_vob; w++) {
+            out_vob[w] = (w < term_words) ? term_vob[w] : 0;
         }
     }
 }
@@ -167,6 +207,10 @@ __global__ void pda_fused_sample_kernel(
     const uint32_t* __restrict__ ctrl_counts,
     uint32_t* __restrict__ vob_buf,
     const uint32_t* __restrict__ forbid,
+    const uint32_t* __restrict__ bridge_flat,
+    const uint32_t* __restrict__ bridge_lens,
+    uint32_t max_bridge_len,
+    const uint32_t* __restrict__ token_to_terminal,
     uint32_t num_states,
     uint32_t num_stack_syms,
     uint32_t num_inputs,
@@ -192,12 +236,14 @@ __global__ void pda_fused_sample_kernel(
         if (c >= num_states) c = 0;
         s = (sp != nullptr) ? sp[seq] : 1;
         top = (s > 0 && stack != nullptr) ? stack[(size_t)seq * d + s - 1] : 0;
-        scan_mask(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, vob, words_per_vob);
+        scan_mask(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, vob, words_per_vob,
+                  bridge_flat, bridge_lens, max_bridge_len);
         // the anti-loop kick (the H2): the clear the forbid bit (the safety floor,
-        // the popcount > 1, the no dead-end).
+        // the popcount > 1, the no dead-end). The forbid is a TOKEN ID (0..vocab),
+        // not a terminal ID (0..num_inputs).
         if (forbid != nullptr) {
             uint32_t f = forbid[seq];
-            if (f != UINT32_MAX && f < num_inputs) {
+            if (f != UINT32_MAX && f < (uint32_t)vocab) {
                 uint32_t popcount = 0;
                 for (uint32_t w = 0; w < words_per_vob; w++) popcount += __popc(vob[w]);
                 if (popcount > 1) {
@@ -288,7 +334,15 @@ __global__ void pda_fused_sample_kernel(
     if (ctrl != nullptr) {
         uint32_t next_ctrl, next_top, push_len;
         const uint32_t* push_base = nullptr;
-        advance_pda(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, (uint32_t)max_idx, &next_ctrl, &next_top, &push_len, &push_base, nullptr);
+        // The PDA's input alphabet is terminals (0..num_inputs), not tokens
+        // (0..vocab). Map the sampled token back to its terminal ID via the
+        // reverse bridge (the token_to_terminal). The null reverse bridge (the
+        // num_inputs == vocab_size, the PDA built directly over token IDs) means
+        // the token ID IS the terminal ID (the identity map).
+        uint32_t terminal_id = (token_to_terminal != nullptr)
+            ? token_to_terminal[max_idx]
+            : (uint32_t)max_idx;
+        advance_pda(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, terminal_id, &next_ctrl, &next_top, &push_len, &push_base, nullptr);
         out_ctrl[seq] = next_ctrl;
         if (out_sp != nullptr) {
             // the stack update: pop 1 (the old top), push push_len (the new symbols).
@@ -321,6 +375,10 @@ __global__ void pda_fused_project_kernel(
     const uint32_t* __restrict__ ctrl_counts,
     const uint32_t* __restrict__ forbid,
     const uint32_t* __restrict__ k_actual, // [batch] the per-seq actual draft length
+    const uint32_t* __restrict__ bridge_flat,
+    const uint32_t* __restrict__ bridge_lens,
+    uint32_t max_bridge_len,
+    const uint32_t* __restrict__ token_to_terminal,
     uint32_t num_states,
     uint32_t num_stack_syms,
     uint32_t num_inputs,
@@ -353,14 +411,16 @@ __global__ void pda_fused_project_kernel(
             for (uint32_t w = 0; w < words_per_vob; w++) out[w] = 0xFFFFFFFF;
             continue;
         }
-        scan_mask(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, out, words_per_vob);
+        scan_mask(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, out, words_per_vob,
+                  bridge_flat, bridge_lens, max_bridge_len);
 
         // The anti-loop kick (the anchor only, the pos 0): clear the forbid bit in
         // the anchor mask (the no draft-triggering the loop at the draft root). The
-        // safety floor (the popcount > 1) prevents a dead-end.
+        // safety floor (the popcount > 1) prevents a dead-end. The forbid is a
+        // TOKEN ID (0..vocab), not a terminal ID (0..num_inputs).
         if (pos == 0 && forbid != nullptr) {
             uint32_t f = forbid[seq];
-            if (f != UINT32_MAX && f < num_inputs) {
+            if (f != UINT32_MAX && f < (uint32_t)words_per_vob * 32) {
                 uint32_t popcount = 0;
                 for (uint32_t w = 0; w < words_per_vob; w++) {
                     popcount += __popc(out[w]);
@@ -379,10 +439,17 @@ __global__ void pda_fused_project_kernel(
         // already masked out as all-allowed).
         if (pos >= (int)k) break;
         // Advance by draft[pos] (the epsilon-closure). Break on divergence (the no
-        // terminal move, matching the CPU project_batch).
+        // terminal move, matching the CPU project_batch). The draft token is a
+        // vocab token; map it to its terminal ID via the reverse bridge (the
+        // PDA's input alphabet is terminals, not tokens). The null reverse
+        // bridge (the num_inputs == vocab_size) means the token ID IS the
+        // terminal ID (the identity map).
         uint32_t tok = draft_row[pos];
+        uint32_t terminal_id = (token_to_terminal != nullptr)
+            ? token_to_terminal[tok]
+            : tok;
         uint32_t next_c, next_top, next_push_len, moved;
-        advance_pda(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, tok, &next_c, &next_top, &next_push_len, nullptr, &moved);
+        advance_pda(transitions, ctrl_u32_offsets, ctrl_counts, num_inputs, c, top, terminal_id, &next_c, &next_top, &next_push_len, nullptr, &moved);
         if (!moved) break; // the draft diverged (the no transition)
         c = next_c;
         top = next_top;
@@ -419,6 +486,10 @@ void pda_fused_sample_f32(
     const uint32_t* ctrl_u32_offsets, const uint32_t* ctrl_counts,
     uint32_t* vob_buf,
     const uint32_t* forbid,
+    const uint32_t* bridge_flat,
+    const uint32_t* bridge_lens,
+    uint32_t max_bridge_len,
+    const uint32_t* token_to_terminal,
     uint32_t num_states, uint32_t num_stack_syms, uint32_t num_inputs,
     uint32_t words_per_vob, int batch, int vocab,
     int top_k, float temperature, float top_p, uint64_t seed, int d, int64_t stream)
@@ -429,6 +500,7 @@ void pda_fused_sample_f32(
     pda_fused_sample_kernel<float><<<blocks, threads, 0, s>>>(
         logits, ctrl, stack, sp, out_ctrl, out_sp, out_tokens,
         transitions, accepting, ctrl_u32_offsets, ctrl_counts, vob_buf, forbid,
+        bridge_flat, bridge_lens, max_bridge_len, token_to_terminal,
         num_states, num_stack_syms, num_inputs,
         words_per_vob, batch, vocab, top_k, temperature, top_p, seed, d);
     cudaError_t err = cudaGetLastError();
@@ -445,6 +517,10 @@ void pda_fused_sample_bf16(
     const uint32_t* ctrl_u32_offsets, const uint32_t* ctrl_counts,
     uint32_t* vob_buf,
     const uint32_t* forbid,
+    const uint32_t* bridge_flat,
+    const uint32_t* bridge_lens,
+    uint32_t max_bridge_len,
+    const uint32_t* token_to_terminal,
     uint32_t num_states, uint32_t num_stack_syms, uint32_t num_inputs,
     uint32_t words_per_vob, int batch, int vocab,
     int top_k, float temperature, float top_p, uint64_t seed, int d, int64_t stream)
@@ -455,6 +531,7 @@ void pda_fused_sample_bf16(
     pda_fused_sample_kernel<__nv_bfloat16><<<blocks, threads, 0, s>>>(
         (const __nv_bfloat16*)logits, ctrl, stack, sp, out_ctrl, out_sp, out_tokens,
         transitions, accepting, ctrl_u32_offsets, ctrl_counts, vob_buf, forbid,
+        bridge_flat, bridge_lens, max_bridge_len, token_to_terminal,
         num_states, num_stack_syms, num_inputs,
         words_per_vob, batch, vocab, top_k, temperature, top_p, seed, d);
     cudaError_t err = cudaGetLastError();
@@ -470,6 +547,10 @@ void pda_fused_project_masks(
     const uint32_t* ctrl_u32_offsets, const uint32_t* ctrl_counts,
     const uint32_t* forbid,
     const uint32_t* k_actual,
+    const uint32_t* bridge_flat,
+    const uint32_t* bridge_lens,
+    uint32_t max_bridge_len,
+    const uint32_t* token_to_terminal,
     uint32_t num_states, uint32_t num_stack_syms, uint32_t num_inputs,
     uint32_t words_per_vob, int batch, int k_max, int d, int64_t stream)
 {
@@ -479,6 +560,7 @@ void pda_fused_project_masks(
     pda_fused_project_kernel<<<blocks, threads, 0, s>>>(
         ctrl, stack, sp, drafts, out_masks,
         transitions, accepting, ctrl_u32_offsets, ctrl_counts, forbid, k_actual,
+        bridge_flat, bridge_lens, max_bridge_len, token_to_terminal,
         num_states, num_stack_syms, num_inputs,
         words_per_vob, batch, k_max, d);
     cudaError_t err = cudaGetLastError();
