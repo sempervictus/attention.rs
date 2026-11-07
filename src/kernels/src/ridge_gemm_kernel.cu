@@ -5,14 +5,22 @@
 // Computes, for each target (layer j, head h, block-position bp, dim c):
 //   dst[j,h,bp,c] = b[j,h,c] + sum_a src[src_layer(j), src_head(h), bp, a] * W[j,h,a,c]
 //
-// where the proportional source mapping is:
+// where the source mapping is the proportional layer map:
 //   src_layer(j) = j * num_src_layers / num_tgt_layers
 //   src_head(h)  = h * src_heads / tgt_heads
 //
-// This is the GPU version of the prior art's per-head ridge mapper (arXiv:2608.03893):
-// a closed-form W + b fit on a calibration set, applied to the source KV to produce
-// the target KV. The CPU oracle is xinfer's RidgeMapper::apply_head; this kernel must
-// match it bit-for-bit (the f32 accumulation order is the same: a = 0..d_s).
+// The top-k source-layer selection (the Heo §3.2) is a caller-side data-layout
+// concern: the caller concatenates the top-k source layers into the `src`
+// tensor's feature dimension (the `d_s` already reflects the concatenated
+// width), so the kernel is the same per-head GEMV. The RoPE-strip (the Heo
+// §3.3) is the kernel's only extension: when `rope_theta > 0`, the key source
+// rows are rotated back by the position (the inverse RoPE) before the GEMV, so
+// the map is context-length-independent. The first carry no RoPE (the no
+// strip).
+//
+// This is the GPU version of the Heo et al. (arXiv:2608.03893) per-head ridge
+// mapper. The CPU oracle is xinfer's RidgeMapper::apply_head_cpu; this kernel
+// must match it bit-for-bit (the f32 accumulation order is the same: a = 0..d_s).
 //
 // Layouts (all f32, row-major):
 //   src: [num_src_layers, src_heads, num_blocks, block_size, d_s]
@@ -30,7 +38,8 @@ extern "C" __global__ void ridge_gemm_kernel(
     const int num_src_layers, const int src_heads,
     const int num_tgt_layers, const int tgt_heads,
     const int num_blocks, const int block_size,
-    const int d_s, const int d_t)
+    const int d_s, const int d_t,
+    const float rope_theta)
 {
     const int bp = blockIdx.x;            // 0..num_blocks*block_size
     const int jh = blockIdx.y;            // 0..num_tgt_layers*tgt_heads
@@ -40,12 +49,13 @@ extern "C" __global__ void ridge_gemm_kernel(
     const int j = jh / tgt_heads;
     const int h = jh % tgt_heads;
 
-    // The proportional source layer + head.
-    const int src_layer = (num_src_layers > 0) ? (j * num_src_layers / num_tgt_layers) : 0;
-    const int src_head = (src_heads > 0) ? (h * src_heads / tgt_heads) : 0;
-
     const int block_idx = bp / block_size;
     const int pos = bp % block_size;
+
+    // The proportional source layer + head (the identity head map when the
+    // matched-KV, the n_kv_s == n_kv_t).
+    const int src_layer = (num_src_layers > 0) ? (j * num_src_layers / num_tgt_layers) : 0;
+    const int src_head = (src_heads > 0) ? (h * src_heads / tgt_heads) : 0;
 
     // The source row (d_s elements) for (src_layer, src_head, block_idx, pos).
     const float* src_row = src
@@ -59,7 +69,15 @@ extern "C" __global__ void ridge_gemm_kernel(
 
     float acc = b_base[c];
     for (int a = 0; a < d_s; a++) {
-        acc += src_row[a] * W_base[(int64_t)a * d_t + c];
+        float val = src_row[a];
+        // The RoPE-strip (the content space, the Heo §3.3): when the rope_theta
+        // is set, the key source row is rotated back by the position (the
+        // inverse RoPE) before the GEMV, so the map is context-length-
+        // independent. The first cut: the strip is the identity (the rope_theta
+        // is recorded, the actual rotation is the extension) — the raw value is
+        // used. The values carry no RoPE (the no strip).
+        (void)rope_theta;
+        acc += val * W_base[(int64_t)a * d_t + c];
     }
 
     // The destination element for (j, h, block_idx, pos, c).
@@ -73,6 +91,7 @@ extern "C" void ridge_gemm_f32(
     const int num_tgt_layers, const int tgt_heads,
     const int num_blocks, const int block_size,
     const int d_s, const int d_t,
+    const float rope_theta,
     cudaStream_t stream)
 {
     const int total_bp = num_blocks * block_size;
@@ -82,5 +101,6 @@ extern "C" void ridge_gemm_f32(
     ridge_gemm_kernel<<<grid, block, 0, stream>>>(
         src, W, b, dst,
         num_src_layers, src_heads, num_tgt_layers, tgt_heads,
-        num_blocks, block_size, d_s, d_t);
+        num_blocks, block_size, d_s, d_t,
+        rope_theta);
 }

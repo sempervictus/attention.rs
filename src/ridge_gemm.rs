@@ -24,6 +24,7 @@ pub mod cuda {
         W: &Tensor,
         b: &Tensor,
         dst: &Tensor,
+        rope_theta: f32,
     ) -> Result<()> {
         use candle_core::cuda_backend::cudarc::driver::DevicePtr;
         use candle_core::cuda_backend::WrapErr;
@@ -72,6 +73,7 @@ pub mod cuda {
                 block_size as i32,
                 d_s as i32,
                 d_t as i32,
+                rope_theta,
                 stream,
             );
         }
@@ -152,7 +154,7 @@ mod tests {
         let b_t = Tensor::from_vec(b.clone(), (num_tgt_layers, tgt_heads, d_t), &dev).unwrap();
         let dst_t = Tensor::zeros((num_tgt_layers, tgt_heads, num_blocks, block_size, d_t), candle_core::DType::F32, &dev).unwrap();
 
-        ridge_gemm(&src_t, &W_t, &b_t, &dst_t).unwrap();
+        ridge_gemm(&src_t, &W_t, &b_t, &dst_t, 0.0).unwrap();
         dev.as_cuda_device().unwrap().synchronize().unwrap();
 
         let dst_out = dst_t.to_device(&Device::Cpu).unwrap().flatten_all().unwrap().to_vec1::<f32>().unwrap();

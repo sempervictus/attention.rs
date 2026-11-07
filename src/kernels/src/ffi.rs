@@ -348,6 +348,8 @@ extern "C" {
 
     /// The big/little cross-model ridge GEMV (the fused-head W + b, the proportional
     /// layer/head map). Computes dst = W*src + b for the cross-model KV translation.
+    /// The `rope_theta` is the RoPE base (the 0.0 = the no strip, the raw-KV map;
+    /// the > 0 = the content-space strip, the extension).
     pub fn ridge_gemm_f32(
         src: *const c_void,
         W: *const c_void,
@@ -361,6 +363,7 @@ extern "C" {
         block_size: i32,
         d_s: i32,
         d_t: i32,
+        rope_theta: f32,
         stream: i64,
     );
 
