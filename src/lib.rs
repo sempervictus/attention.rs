@@ -8,6 +8,7 @@ compile_error!("Enable exactly one backend feature: `cuda` or `metal`.");
 compile_error!("Features `flashinfer` and `flashattn` are mutually exclusive. Enable only one.");
 
 #[cfg(feature = "cuda")]
+pub mod reject;
 pub mod graph_workspace;
 pub mod moe;
 pub mod moe_w2;
@@ -39,6 +40,8 @@ pub mod cache;
 pub mod cuda_utils;
 #[cfg(feature = "cuda")]
 pub mod expert_cache;
+#[cfg(feature = "cuda")]
+pub mod cuda_ipc;
 pub mod deepseek_v4;
 pub mod fp8_linear;
 pub mod gdn;
@@ -49,6 +52,10 @@ pub mod mxfp4_linear;
 pub mod nvfp4_linear;
 pub mod ops;
 pub mod qwen4;
+#[cfg(feature = "cuda")]
+pub mod ridge_gemm;
+#[cfg(feature = "cuda")]
+pub mod lora_fused;
 pub mod silu_and_mul;
 pub mod swiglu;
 
