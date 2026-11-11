@@ -1157,6 +1157,24 @@ extern "C" {
         stream: i64,
     );
 
+    // VOB + per-seq: the compact [B, V/32] U32 grammar bitset fused with the per-row
+    // QoS strategy. The candidate-pool width is the per-seq contract K=256 (the
+    // sibling sampling_perseq_masked_f32). The existing sampling_vob_f32 (the
+    // shared-strategy VOB) is unchanged.
+    pub fn sampling_vob_perseq_f32(
+        logits_d: *const f32,
+        vob_d: *const u32, // [B, V/32] bitset, or null
+        out_tokens_d: *mut i32,
+        B: i32,
+        V: i32,
+        temperature_d: *const f32, // [B]
+        top_p_d: *const f32,       // [B]
+        top_k_d: *const u32,       // [B]
+        seed: u64,
+        token_pos: u64,
+        stream: i64,
+    );
+
     // Fused Rotary Position Embedding (RoPE) kernels - with position selection
     // Non-interleaved versions - support GQA, fuses index_select
     pub fn fused_rope_f32(
